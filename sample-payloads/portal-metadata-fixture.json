@@ -1,0 +1,200 @@
+{
+  "_meta": {
+    "synthetic": true,
+    "description": "Sanitized, fully synthetic HubSpot portal metadata for offline testing. No real portal, user, company or contact data. Shapes mirror HubSpot CRM v3 (schemas, properties, property groups, pipelines) and Automation v4 (flows) list responses.",
+    "fixtureVersion": "1.0.0",
+    "placeholderPortalId": "99000001"
+  },
+  "portalId": "99000001",
+  "accountInfo": {
+    "portalId": 99000001,
+    "accountType": "DEVELOPER_TEST",
+    "timeZone": "UTC",
+    "companyCurrency": "USD",
+    "uiDomain": "app.hubspot.example"
+  },
+  "customObjectSchemas": [
+    {
+      "id": "9900001",
+      "objectTypeId": "2-9900001",
+      "name": "vendor_contract",
+      "fullyQualifiedName": "p99000001_vendor_contract",
+      "labels": { "singular": "Vendor Contract (Mock)", "plural": "Vendor Contracts (Mock)" },
+      "primaryDisplayProperty": "contract_name",
+      "secondaryDisplayProperties": ["contract_status"],
+      "requiredProperties": ["contract_name"],
+      "searchableProperties": ["contract_name", "contract_reference"],
+      "archived": false,
+      "createdAt": "2026-01-05T10:00:00.000Z",
+      "updatedAt": "2026-10-28T09:15:00.000Z",
+      "createdByUserId": 90000001,
+      "updatedByUserId": 90000002,
+      "associations": [
+        { "id": "990001", "name": "vendor_contract_to_company", "fromObjectTypeId": "2-9900001", "toObjectTypeId": "0-2", "createdAt": "2026-01-05T10:00:00.000Z", "updatedAt": "2026-01-05T10:00:00.000Z" },
+        { "id": "990002", "name": "vendor_contract_to_deal", "fromObjectTypeId": "2-9900001", "toObjectTypeId": "0-3", "createdAt": "2026-01-05T10:00:00.000Z", "updatedAt": "2026-01-05T10:00:00.000Z" }
+      ],
+      "properties": [
+        { "name": "hs_object_id", "label": "Record ID", "type": "number", "fieldType": "number", "groupName": "vendor_contract_information", "description": "", "displayOrder": -1, "hubspotDefined": true, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": true, "formField": false, "options": [], "archived": false, "createdAt": "2026-01-05T10:00:00.000Z", "updatedAt": "2026-01-05T10:00:00.000Z" },
+        { "name": "contract_name", "label": "Contract Name", "type": "string", "fieldType": "text", "groupName": "vendor_contract_information", "description": "Synthetic display name for the mock contract.", "displayOrder": 1, "hubspotDefined": false, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": true, "options": [], "archived": false, "createdAt": "2026-01-05T10:00:00.000Z", "updatedAt": "2026-03-02T08:00:00.000Z", "createdUserId": "90000001", "updatedUserId": "90000002" },
+        { "name": "contract_reference", "label": "Contract Reference", "type": "string", "fieldType": "text", "groupName": "vendor_contract_information", "description": "Mock external reference, e.g. VC-0001.", "displayOrder": 2, "hubspotDefined": false, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": true, "formField": false, "options": [], "archived": false, "createdAt": "2026-01-05T10:00:00.000Z", "updatedAt": "2026-01-05T10:00:00.000Z", "createdUserId": "90000001" },
+        { "name": "contract_status", "label": "Contract Status", "type": "enumeration", "fieldType": "select", "groupName": "vendor_contract_information", "description": "", "displayOrder": 3, "hubspotDefined": false, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": true, "archived": false, "createdAt": "2026-01-05T10:00:00.000Z", "updatedAt": "2026-09-14T12:30:00.000Z", "createdUserId": "90000001", "updatedUserId": "90000003",
+          "options": [
+            { "label": "Draft", "value": "draft", "displayOrder": 0, "hidden": false },
+            { "label": "Active", "value": "active", "displayOrder": 1, "hidden": false },
+            { "label": "Expired", "value": "expired", "displayOrder": 2, "hidden": false }
+          ]
+        },
+        { "name": "annual_contract_value", "label": "Annual Contract Value", "type": "number", "fieldType": "number", "groupName": "vendor_contract_financials", "description": "Mock currency amount.", "displayOrder": 4, "hubspotDefined": false, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": false, "options": [], "archived": false, "showCurrencySymbol": true, "createdAt": "2026-01-05T10:00:00.000Z", "updatedAt": "2026-01-05T10:00:00.000Z" }
+      ]
+    }
+  ],
+  "properties": {
+    "contacts": [
+      { "name": "email", "label": "Email", "type": "string", "fieldType": "text", "groupName": "contactinformation", "description": "", "displayOrder": -1, "hubspotDefined": true, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": true, "options": [], "archived": false, "createdAt": "2019-08-06T02:41:52.000Z", "updatedAt": "2026-10-01T00:00:00.000Z" },
+      { "name": "lifecyclestage", "label": "Lifecycle Stage", "type": "enumeration", "fieldType": "radio", "groupName": "contactinformation", "description": "", "displayOrder": -1, "hubspotDefined": true, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": true, "archived": false, "createdAt": "2019-08-06T02:41:52.000Z", "updatedAt": "2026-10-01T00:00:00.000Z",
+        "options": [
+          { "label": "Subscriber", "value": "subscriber", "displayOrder": 0, "hidden": false },
+          { "label": "Lead", "value": "lead", "displayOrder": 1, "hidden": false },
+          { "label": "Customer", "value": "customer", "displayOrder": 2, "hidden": false }
+        ]
+      },
+      { "name": "lead_source_detail", "label": "Lead Source Detail (Mock)", "type": "enumeration", "fieldType": "select", "groupName": "revops_attribution", "description": "Synthetic attribution picklist.", "displayOrder": 1, "hubspotDefined": false, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": true, "archived": false, "createdAt": "2026-02-10T09:00:00.000Z", "updatedAt": "2026-08-21T16:45:00.000Z", "createdUserId": "90000001", "updatedUserId": "90000002",
+        "options": [
+          { "label": "Webinar", "value": "webinar", "displayOrder": 2, "hidden": false },
+          { "label": "Partner Referral", "value": "partner_referral", "displayOrder": 1, "hidden": false },
+          { "label": "Paid Search", "value": "paid_search", "displayOrder": 0, "hidden": false },
+          { "label": "Legacy Trade Show", "value": "legacy_trade_show", "displayOrder": 3, "hidden": true }
+        ]
+      },
+      { "name": "icp_fit_score", "label": "ICP Fit Score", "type": "number", "fieldType": "number", "groupName": "revops_scoring", "description": "0-100 synthetic fit score.", "displayOrder": 2, "hubspotDefined": false, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": false, "options": [], "archived": false, "createdAt": "2026-02-10T09:00:00.000Z", "updatedAt": "2026-02-10T09:00:00.000Z", "createdUserId": "90000001" },
+      { "name": "routing_region", "label": "Routing Region", "type": "enumeration", "fieldType": "select", "groupName": "revops_routing", "description": "Mock territory for lead routing.", "displayOrder": 3, "hubspotDefined": false, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": false, "archived": false, "createdAt": "2026-03-01T09:00:00.000Z", "updatedAt": "2026-03-01T09:00:00.000Z", "createdUserId": "90000002",
+        "options": [
+          { "label": "AMER", "value": "amer", "displayOrder": 0, "hidden": false },
+          { "label": "EMEA", "value": "emea", "displayOrder": 1, "hidden": false },
+          { "label": "APAC", "value": "apac", "displayOrder": 2, "hidden": false }
+        ]
+      },
+      { "name": "consent_basis_note", "label": "Consent Basis Note", "type": "string", "fieldType": "textarea", "groupName": "revops_compliance", "description": "Synthetic free-text compliance note field.", "displayOrder": 4, "hubspotDefined": false, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": false, "options": [], "archived": false, "createdAt": "2026-04-15T09:00:00.000Z", "updatedAt": "2026-04-15T09:00:00.000Z", "createdUserId": "90000003" }
+    ],
+    "companies": [
+      { "name": "domain", "label": "Company Domain Name", "type": "string", "fieldType": "text", "groupName": "companyinformation", "description": "", "displayOrder": -1, "hubspotDefined": true, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": true, "options": [], "archived": false, "createdAt": "2019-08-06T02:41:52.000Z", "updatedAt": "2026-10-01T00:00:00.000Z" },
+      { "name": "account_tier", "label": "Account Tier", "type": "enumeration", "fieldType": "select", "groupName": "revops_segmentation", "description": "Synthetic tiering picklist.", "displayOrder": 1, "hubspotDefined": false, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": false, "archived": false, "createdAt": "2026-01-20T09:00:00.000Z", "updatedAt": "2026-07-07T07:07:00.000Z", "createdUserId": "90000001", "updatedUserId": "90000001",
+        "options": [
+          { "label": "Tier 1", "value": "tier_1", "displayOrder": 0, "hidden": false },
+          { "label": "Tier 2", "value": "tier_2", "displayOrder": 1, "hidden": false },
+          { "label": "Tier 3", "value": "tier_3", "displayOrder": 2, "hidden": false }
+        ]
+      },
+      { "name": "arr_band", "label": "ARR Band", "type": "enumeration", "fieldType": "select", "groupName": "revops_segmentation", "description": "", "displayOrder": 2, "hubspotDefined": false, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": false, "archived": false, "createdAt": "2026-01-20T09:00:00.000Z", "updatedAt": "2026-01-20T09:00:00.000Z",
+        "options": []
+      }
+    ],
+    "deals": [
+      { "name": "dealname", "label": "Deal Name", "type": "string", "fieldType": "text", "groupName": "dealinformation", "description": "", "displayOrder": -1, "hubspotDefined": true, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": true, "options": [], "archived": false, "createdAt": "2019-08-06T02:41:52.000Z", "updatedAt": "2026-10-01T00:00:00.000Z" },
+      { "name": "amount", "label": "Amount", "type": "number", "fieldType": "number", "groupName": "dealinformation", "description": "", "displayOrder": -1, "hubspotDefined": true, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": true, "options": [], "archived": false, "showCurrencySymbol": true, "createdAt": "2019-08-06T02:41:52.000Z", "updatedAt": "2026-10-01T00:00:00.000Z" },
+      { "name": "deal_tier", "label": "Deal Tier", "type": "enumeration", "fieldType": "select", "groupName": "revops_deal_qualification", "description": "Synthetic deal size tier.", "displayOrder": 1, "hubspotDefined": false, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": false, "archived": false, "createdAt": "2026-01-12T09:00:00.000Z", "updatedAt": "2026-06-30T10:00:00.000Z", "createdUserId": "90000001", "updatedUserId": "90000002",
+        "options": [
+          { "label": "SMB", "value": "smb", "displayOrder": 0, "hidden": false },
+          { "label": "Mid-Market", "value": "mid_market", "displayOrder": 1, "hidden": false },
+          { "label": "Enterprise", "value": "enterprise", "displayOrder": 2, "hidden": false }
+        ]
+      },
+      { "name": "meddpicc_champion_identified", "label": "Champion Identified", "type": "bool", "fieldType": "booleancheckbox", "groupName": "revops_deal_qualification", "description": "", "displayOrder": 2, "hubspotDefined": false, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": false, "archived": false, "createdAt": "2026-01-12T09:00:00.000Z", "updatedAt": "2026-01-12T09:00:00.000Z",
+        "options": [
+          { "label": "Yes", "value": "true", "displayOrder": 0, "hidden": false },
+          { "label": "No", "value": "false", "displayOrder": 1, "hidden": false }
+        ]
+      },
+      { "name": "forecast_commit_override", "label": "Forecast Commit Override", "type": "enumeration", "fieldType": "select", "groupName": "revops_forecasting", "description": "Mock manager override for forecast category.", "displayOrder": 3, "hubspotDefined": false, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": false, "archived": false, "createdAt": "2026-05-05T09:00:00.000Z", "updatedAt": "2026-05-05T09:00:00.000Z", "createdUserId": "90000002",
+        "options": [
+          { "label": "Commit", "value": "commit", "displayOrder": 0, "hidden": false },
+          { "label": "Best Case", "value": "best_case", "displayOrder": 1, "hidden": false },
+          { "label": "Pipeline", "value": "pipeline", "displayOrder": 2, "hidden": false }
+        ]
+      },
+      { "name": "weighted_amount_calc", "label": "Weighted Amount (Calc)", "type": "number", "fieldType": "calculation_equation", "groupName": "revops_forecasting", "description": "Synthetic calculated property.", "displayOrder": 4, "hubspotDefined": false, "hidden": false, "calculated": true, "externalOptions": false, "hasUniqueValue": false, "formField": false, "options": [], "archived": false, "calculationFormula": "amount * hs_deal_stage_probability", "createdAt": "2026-05-05T09:00:00.000Z", "updatedAt": "2026-05-05T09:00:00.000Z" }
+    ],
+    "tickets": [
+      { "name": "subject", "label": "Ticket name", "type": "string", "fieldType": "text", "groupName": "ticketinformation", "description": "", "displayOrder": -1, "hubspotDefined": true, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": true, "options": [], "archived": false, "createdAt": "2019-08-06T02:41:52.000Z", "updatedAt": "2026-10-01T00:00:00.000Z" },
+      { "name": "escalation_level", "label": "Escalation Level", "type": "enumeration", "fieldType": "select", "groupName": "service_ops", "description": "Synthetic escalation picklist.", "displayOrder": 1, "hubspotDefined": false, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": false, "archived": false, "createdAt": "2026-02-02T09:00:00.000Z", "updatedAt": "2026-02-02T09:00:00.000Z",
+        "options": [
+          { "label": "L1", "value": "l1", "displayOrder": 0, "hidden": false },
+          { "label": "L2", "value": "l2", "displayOrder": 1, "hidden": false },
+          { "label": "L3", "value": "l3", "displayOrder": 2, "hidden": false }
+        ]
+      },
+      { "name": "sla_breach_risk", "label": "SLA Breach Risk", "type": "bool", "fieldType": "booleancheckbox", "groupName": "service_ops", "description": "", "displayOrder": 2, "hubspotDefined": false, "hidden": false, "calculated": false, "externalOptions": false, "hasUniqueValue": false, "formField": false, "archived": false, "createdAt": "2026-02-02T09:00:00.000Z", "updatedAt": "2026-02-02T09:00:00.000Z",
+        "options": [
+          { "label": "Yes", "value": "true", "displayOrder": 0, "hidden": false },
+          { "label": "No", "value": "false", "displayOrder": 1, "hidden": false }
+        ]
+      }
+    ]
+  },
+  "propertyGroups": {
+    "contacts": [
+      { "name": "contactinformation", "label": "Contact information", "displayOrder": -1, "archived": false },
+      { "name": "revops_attribution", "label": "RevOps: Attribution (Mock)", "displayOrder": 10, "archived": false },
+      { "name": "revops_scoring", "label": "RevOps: Scoring (Mock)", "displayOrder": 11, "archived": false },
+      { "name": "revops_routing", "label": "RevOps: Routing (Mock)", "displayOrder": 12, "archived": false },
+      { "name": "revops_compliance", "label": "RevOps: Compliance (Mock)", "displayOrder": 13, "archived": false }
+    ],
+    "companies": [
+      { "name": "companyinformation", "label": "Company information", "displayOrder": -1, "archived": false },
+      { "name": "revops_segmentation", "label": "RevOps: Segmentation (Mock)", "displayOrder": 10, "archived": false }
+    ],
+    "deals": [
+      { "name": "dealinformation", "label": "Deal information", "displayOrder": -1, "archived": false },
+      { "name": "revops_deal_qualification", "label": "RevOps: Qualification (Mock)", "displayOrder": 10, "archived": false },
+      { "name": "revops_forecasting", "label": "RevOps: Forecasting (Mock)", "displayOrder": 11, "archived": false }
+    ],
+    "tickets": [
+      { "name": "ticketinformation", "label": "Ticket information", "displayOrder": -1, "archived": false },
+      { "name": "service_ops", "label": "Service Ops (Mock)", "displayOrder": 10, "archived": false }
+    ]
+  },
+  "pipelines": {
+    "deals": [
+      {
+        "id": "default", "label": "New Business (Mock)", "displayOrder": 0, "archived": false,
+        "createdAt": "2019-08-06T02:41:52.000Z", "updatedAt": "2026-09-01T09:00:00.000Z",
+        "stages": [
+          { "id": "appointmentscheduled", "label": "Discovery", "displayOrder": 0, "archived": false, "metadata": { "isClosed": "false", "probability": "0.1" }, "writePermissions": "CRM_PERMISSIONS_ENFORCEMENT", "createdAt": "2019-08-06T02:41:52.000Z", "updatedAt": "2026-09-01T09:00:00.000Z" },
+          { "id": "qualifiedtobuy", "label": "Qualified", "displayOrder": 1, "archived": false, "metadata": { "isClosed": "false", "probability": "0.25" }, "writePermissions": "CRM_PERMISSIONS_ENFORCEMENT", "createdAt": "2019-08-06T02:41:52.000Z", "updatedAt": "2026-09-01T09:00:00.000Z" },
+          { "id": "presentationscheduled", "label": "Solution Review", "displayOrder": 2, "archived": false, "metadata": { "isClosed": "false", "probability": "0.5" }, "writePermissions": "CRM_PERMISSIONS_ENFORCEMENT", "createdAt": "2019-08-06T02:41:52.000Z", "updatedAt": "2026-09-01T09:00:00.000Z" },
+          { "id": "contractsent", "label": "Contract Sent", "displayOrder": 3, "archived": false, "metadata": { "isClosed": "false", "probability": "0.8" }, "writePermissions": "CRM_PERMISSIONS_ENFORCEMENT", "createdAt": "2019-08-06T02:41:52.000Z", "updatedAt": "2026-09-01T09:00:00.000Z" },
+          { "id": "closedwon", "label": "Closed Won", "displayOrder": 4, "archived": false, "metadata": { "isClosed": "true", "probability": "1.0" }, "writePermissions": "CRM_PERMISSIONS_ENFORCEMENT", "createdAt": "2019-08-06T02:41:52.000Z", "updatedAt": "2026-09-01T09:00:00.000Z" },
+          { "id": "closedlost", "label": "Closed Lost", "displayOrder": 5, "archived": false, "metadata": { "isClosed": "true", "probability": "0.0" }, "writePermissions": "CRM_PERMISSIONS_ENFORCEMENT", "createdAt": "2019-08-06T02:41:52.000Z", "updatedAt": "2026-09-01T09:00:00.000Z" }
+        ]
+      },
+      {
+        "id": "99100001", "label": "Renewals (Mock)", "displayOrder": 1, "archived": false,
+        "createdAt": "2026-03-10T09:00:00.000Z", "updatedAt": "2026-10-20T09:00:00.000Z",
+        "stages": [
+          { "id": "99100011", "label": "Renewal Open", "displayOrder": 0, "archived": false, "metadata": { "isClosed": "false", "probability": "0.6" }, "writePermissions": "CRM_PERMISSIONS_ENFORCEMENT", "createdAt": "2026-03-10T09:00:00.000Z", "updatedAt": "2026-03-10T09:00:00.000Z" },
+          { "id": "99100012", "label": "Renewal At Risk", "displayOrder": 1, "archived": false, "metadata": { "isClosed": "false", "probability": "0.3" }, "writePermissions": "CRM_PERMISSIONS_ENFORCEMENT", "createdAt": "2026-03-10T09:00:00.000Z", "updatedAt": "2026-10-20T09:00:00.000Z" },
+          { "id": "99100013", "label": "Renewed", "displayOrder": 2, "archived": false, "metadata": { "isClosed": "true", "probability": "1.0" }, "writePermissions": "CRM_PERMISSIONS_ENFORCEMENT", "createdAt": "2026-03-10T09:00:00.000Z", "updatedAt": "2026-03-10T09:00:00.000Z" },
+          { "id": "99100014", "label": "Churned", "displayOrder": 3, "archived": false, "metadata": { "isClosed": "true", "probability": "0.0" }, "writePermissions": "CRM_PERMISSIONS_ENFORCEMENT", "createdAt": "2026-03-10T09:00:00.000Z", "updatedAt": "2026-03-10T09:00:00.000Z" }
+        ]
+      }
+    ],
+    "tickets": [
+      {
+        "id": "0", "label": "Support Pipeline (Mock)", "displayOrder": 0, "archived": false,
+        "createdAt": "2019-08-06T02:41:52.000Z", "updatedAt": "2026-06-01T09:00:00.000Z",
+        "stages": [
+          { "id": "1", "label": "New", "displayOrder": 0, "archived": false, "metadata": { "ticketState": "OPEN" }, "createdAt": "2019-08-06T02:41:52.000Z", "updatedAt": "2026-06-01T09:00:00.000Z" },
+          { "id": "2", "label": "Waiting on contact", "displayOrder": 1, "archived": false, "metadata": { "ticketState": "OPEN" }, "createdAt": "2019-08-06T02:41:52.000Z", "updatedAt": "2026-06-01T09:00:00.000Z" },
+          { "id": "3", "label": "Waiting on us", "displayOrder": 2, "archived": false, "metadata": { "ticketState": "OPEN" }, "createdAt": "2019-08-06T02:41:52.000Z", "updatedAt": "2026-06-01T09:00:00.000Z" },
+          { "id": "4", "label": "Closed", "displayOrder": 3, "archived": false, "metadata": { "ticketState": "CLOSED" }, "createdAt": "2019-08-06T02:41:52.000Z", "updatedAt": "2026-06-01T09:00:00.000Z" }
+        ]
+      }
+    ]
+  },
+  "workflows": [
+    { "id": "990000101", "name": "SYNTHETIC - Inbound Lead Routing (Mock)", "flowType": "WORKFLOW", "objectTypeId": "0-1", "isEnabled": true, "revisionId": "14", "createdAt": "2026-02-11T09:00:00.000Z", "updatedAt": "2026-10-02T09:00:00.000Z" },
+    { "id": "990000102", "name": "SYNTHETIC - Deal Stage SLA Alerts (Mock)", "flowType": "WORKFLOW", "objectTypeId": "0-3", "isEnabled": true, "revisionId": "7", "createdAt": "2026-03-15T09:00:00.000Z", "updatedAt": "2026-09-19T09:00:00.000Z" },
+    { "id": "990000103", "name": "SYNTHETIC - Renewal Risk Escalation (Mock)", "flowType": "WORKFLOW", "objectTypeId": "0-3", "isEnabled": false, "revisionId": "3", "createdAt": "2026-04-20T09:00:00.000Z", "updatedAt": "2026-04-22T09:00:00.000Z" },
+    { "id": "990000104", "name": "SYNTHETIC - Vendor Contract Expiry Reminder (Mock)", "flowType": "WORKFLOW", "objectTypeId": "2-9900001", "isEnabled": true, "revisionId": "5", "createdAt": "2026-05-30T09:00:00.000Z", "updatedAt": "2026-08-11T09:00:00.000Z" }
+  ]
+}
