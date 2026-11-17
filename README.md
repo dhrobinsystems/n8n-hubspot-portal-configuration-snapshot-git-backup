@@ -48,6 +48,8 @@ It is **safe by default**. Imported as-is, the workflow runs against a synthetic
 
 ## 2. Architecture overview
 
+![n8n Workflow Overview](https://raw.githubusercontent.com/dhrobinsystems/n8n-hubspot-portal-configuration-snapshot-git-backup/main/workflow-overview.png)
+
 ```mermaid
 flowchart LR
     subgraph T["Triggers"]
