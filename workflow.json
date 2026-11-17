@@ -1,0 +1,1084 @@
+{
+  "name": "HubSpot Portal Configuration Snapshot → Git Backup (Safe-by-Default)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## HubSpot Portal Configuration Snapshot → Git\n\n**Safe by default.** With no environment variables set this workflow runs in **SANDBOX_MODE** against a synthetic fixture (portal 99000001), makes **zero network calls**, and never commits.\n\nTo go live you must explicitly set:\n`SANDBOX_MODE=false` · `DRY_RUN=false` · `GIT_COMMITS_ENABLED=true`\nplus `HUBSPOT_ACCESS_TOKEN`, `HUBSPOT_PORTAL_ID`, `GITHUB_PAT`, `GITHUB_REPOSITORY`.\n\nHubSpot calls are **GET only**. Secrets are read from `$env` inside HTTP header expressions and never copied into item data.\n\nRequires `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`. See README.md.",
+        "height": 340,
+        "width": 520,
+        "color": 4
+      },
+      "id": "104233a8-0e66-4e06-a65a-4362e0dbaa46",
+      "name": "Safety Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -420,
+        -420
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "4fbcf035-f914-4c5d-a95e-6ba78d29b2b9",
+      "name": "Manual Test Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "15 2 * * *"
+            }
+          ]
+        }
+      },
+      "id": "1e3e8e70-165c-45f7-abc1-ce3d9b6c0edd",
+      "name": "Daily Snapshot Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -400,
+        200
+      ],
+      "notes": "Daily at 02:15 in the n8n instance time zone (GENERIC_TIMEZONE). The workflow ships inactive."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// Config & Safety Gate\n// Reads ONLY environment variables (never hardcoded secrets) and resolves a\n// fail-safe runtime configuration. Secrets are never copied into item data:\n// only presence booleans (hasHubspotToken, hasGitToken, ...) leave this node.\n//\n// Safety semantics:\n//   * \"Safe-ON\" flags (SANDBOX_MODE, DRY_RUN) switch OFF only on an explicit\n//     false/0/no/off. Typos, blanks and unknown values keep them ON.\n//   * \"Safe-OFF\" flags (GIT_COMMITS_ENABLED, NOTIFICATIONS_ENABLED, ...) switch\n//     ON only on an explicit true/1/yes/on.\n//   * If n8n blocks $env access, every flag falls back to its safe default.\n// ============================================================================\nconst TRUTHY = ['true', '1', 'yes', 'on'];\nconst FALSY = ['false', '0', 'no', 'off'];\nlet envBlocked = false;\n\nfunction readEnv(key) {\n  try {\n    const v = $env[key];\n    if (v === undefined || v === null) return '';\n    return String(v).trim();\n  } catch (e) {\n    envBlocked = true;\n    return '';\n  }\n}\nconst str = (key, dflt = '') => readEnv(key) || dflt;\nconst safeOn = (key) => !FALSY.includes(readEnv(key).toLowerCase());\nconst safeOff = (key) => TRUTHY.includes(readEnv(key).toLowerCase());\nconst list = (key, dflt) =>\n  (readEnv(key) || dflt)\n    .split(',')\n    .map((s) => s.trim())\n    .filter(Boolean);\nconst int = (key, dflt, min, max) => {\n  const n = parseInt(readEnv(key), 10);\n  if (Number.isNaN(n)) return dflt;\n  return Math.min(max, Math.max(min, n));\n};\n\nconst SYNTHETIC_PORTAL_ID = '99000001';\nconst sandboxMode = safeOn('SANDBOX_MODE');\nconst dryRun = safeOn('DRY_RUN');\nconst gitCommitsEnabled = safeOff('GIT_COMMITS_ENABLED');\nconst notificationsEnabled = safeOff('NOTIFICATIONS_ENABLED');\n\nconst hasHubspotToken = readEnv('HUBSPOT_ACCESS_TOKEN') !== '';\nconst hasGitToken = readEnv('GITHUB_PAT') !== '';\nconst hasWebhook = readEnv('SLACK_WEBHOOK_URL') !== '';\n\n// ---- Portal identity -------------------------------------------------------\n// Sandbox runs always use the synthetic portal ID so that mock data can never\n// be filed under a real portal folder in the backup repository.\nconst configuredPortalId = str('HUBSPOT_PORTAL_ID');\nconst portalId = sandboxMode ? SYNTHETIC_PORTAL_ID : configuredPortalId;\n\nif (!sandboxMode) {\n  const problems = [];\n  if (!hasHubspotToken) problems.push('HUBSPOT_ACCESS_TOKEN is not set');\n  if (!/^\\d{1,12}$/.test(configuredPortalId)) problems.push('HUBSPOT_PORTAL_ID must be a numeric HubSpot portal (Hub) ID');\n  if (problems.length) {\n    throw new Error(\n      'Live mode (SANDBOX_MODE=false) refused: ' + problems.join('; ') +\n      '. Set the missing variables or re-enable SANDBOX_MODE=true.'\n    );\n  }\n}\n\n// ---- Export scope ----------------------------------------------------------\nconst objectTypes = list('EXPORT_OBJECT_TYPES', 'contacts,companies,deals,tickets')\n  .filter((t) => /^[a-z0-9_\\-]+$/i.test(t));\nconst pipelineObjectTypes = list('EXPORT_PIPELINE_OBJECT_TYPES', 'deals,tickets')\n  .filter((t) => /^[a-z0-9_\\-]+$/i.test(t));\nconst workflowsApi = str('HUBSPOT_WORKFLOWS_API', 'v4').toLowerCase() === 'v3' ? 'v3' : 'v4';\n\nconst scope = {\n  customObjects: safeOn('EXPORT_CUSTOM_OBJECTS'),\n  properties: safeOn('EXPORT_PROPERTIES'),\n  propertyGroups: safeOn('EXPORT_PROPERTY_GROUPS'),\n  pipelines: safeOn('EXPORT_PIPELINES'),\n  workflows: safeOn('EXPORT_WORKFLOWS'),\n  includeHubspotDefinedProperties: safeOff('EXPORT_HUBSPOT_DEFINED_PROPERTIES'),\n  objectTypes,\n  pipelineObjectTypes,\n  workflowsApi,\n};\n\n// ---- Normalization options -------------------------------------------------\nconst normalization = {\n  stripVolatileTimestamps: safeOn('STRIP_VOLATILE_TIMESTAMPS'),\n  redactUserIds: safeOn('REDACT_USER_IDS'),\n  verifyPortalId: safeOn('VERIFY_PORTAL_ID'),\n};\n\n// ---- Git target ------------------------------------------------------------\nconst repo = str('GITHUB_REPOSITORY');\nconst repoValid = /^[A-Za-z0-9_.\\-]+\\/[A-Za-z0-9_.\\-]+$/.test(repo);\nconst branch = str('GIT_BRANCH', 'hubspot-config-snapshots');\nconst branchValid = /^[A-Za-z0-9._\\/\\-]+$/.test(branch) && !branch.includes('..');\nconst protectedBranches = list('GIT_PROTECTED_BRANCHES', 'main,master,production');\nconst allowProtectedBranch = safeOff('GIT_ALLOW_PROTECTED_BRANCH');\nconst apiBase = str('GITHUB_API_BASE_URL', 'https://api.github.com').replace(/\\/+$/, '');\nconst snapshotRoot = str('GIT_SNAPSHOT_ROOT', 'snapshots').replace(/^\\/+|\\/+$/g, '') + '/portal-' + portalId;\nconst webUrl = str('GIT_REPO_URL').replace(/\\.git$/, '').replace(/\\/+$/, '');\n\n// Static commit-gate reasons (dynamic ones such as health and \"no changes\"\n// are added later by the Versioned Diff Builder).\nconst commitBlockers = [];\nif (sandboxMode) commitBlockers.push('SANDBOX_MODE=true (synthetic fixture run)');\nif (dryRun) commitBlockers.push('DRY_RUN=true');\nif (!gitCommitsEnabled) commitBlockers.push('GIT_COMMITS_ENABLED is not true');\nif (!hasGitToken) commitBlockers.push('GITHUB_PAT is not set');\nif (!repoValid) commitBlockers.push('GITHUB_REPOSITORY is missing or not in owner/repo form');\nif (!branchValid) commitBlockers.push('GIT_BRANCH contains unsupported characters');\nif (protectedBranches.includes(branch) && !allowProtectedBranch) {\n  commitBlockers.push(`GIT_BRANCH \"${branch}\" is protected (set GIT_ALLOW_PROTECTED_BRANCH=true to override)`);\n}\nif (envBlocked) commitBlockers.push('n8n blocked $env access (N8N_BLOCK_ENV_ACCESS_IN_NODE)');\n\nconst remoteReadAllowed =\n  !sandboxMode && hasGitToken && repoValid && branchValid && safeOn('GIT_REMOTE_DIFF_ENABLED');\n\nconst notifyAllowed = notificationsEnabled && hasWebhook && !envBlocked;\n\nconst capturedAt = (() => {\n  const override = str('SNAPSHOT_TIMESTAMP_OVERRIDE');\n  if (override && !Number.isNaN(Date.parse(override))) return new Date(override).toISOString();\n  return new Date().toISOString();\n})();\n\nconst config = {\n  runId: 'snap-' + capturedAt.replace(/[-:.TZ]/g, '').slice(0, 14) + '-' + Math.random().toString(36).slice(2, 8),\n  capturedAt,\n  snapshotVersion: 'v' + capturedAt.replace(/[-:]/g, '').replace(/\\.\\d+Z$/, 'Z'),\n  envBlocked,\n  sandboxMode,\n  dryRun,\n  portalId,\n  hubspot: {\n    apiBase: str('HUBSPOT_API_BASE_URL', 'https://api.hubapi.com').replace(/\\/+$/, ''),\n    hasToken: hasHubspotToken,\n    workflowsUrl: '',\n  },\n  scope,\n  normalization,\n  git: {\n    commitsEnabled: gitCommitsEnabled,\n    hasToken: hasGitToken,\n    repo: repoValid ? repo : '',\n    branch,\n    apiBase,\n    apiRepoBase: repoValid ? `${apiBase}/repos/${repo}` : '',\n    snapshotRoot,\n    webUrl,\n    pruneRemovedFiles: safeOff('GIT_PRUNE_REMOVED_FILES'),\n    commitOnDegraded: safeOff('GIT_COMMIT_ON_DEGRADED'),\n    commitAuthorName: str('GIT_COMMIT_AUTHOR_NAME', 'HubSpot Config Snapshot Bot'),\n    commitAuthorEmail: str('GIT_COMMIT_AUTHOR_EMAIL', 'snapshot-bot@example.invalid'),\n    remoteReadAllowed,\n    staticCommitBlockers: commitBlockers,\n  },\n  notify: {\n    enabled: notificationsEnabled,\n    hasWebhook,\n    allowed: notifyAllowed,\n    channelLabel: str('NOTIFY_CHANNEL_LABEL', '#revops-alerts'),\n  },\n  limits: {\n    // Must match the pagination \"Max Pages\" (50) on the HubSpot Workflows Export node.\n    maxWorkflowPages: 50,\n    maxRecordNamesInCommit: int('COMMIT_MESSAGE_MAX_RECORD_NAMES', 15, 1, 200),\n  },\n};\n\nconfig.hubspot.workflowsUrl =\n  workflowsApi === 'v3'\n    ? `${config.hubspot.apiBase}/automation/v3/workflows`\n    : `${config.hubspot.apiBase}/automation/v4/flows?limit=100`;\n\nconst safetyDecisions = [\n  `Mode: ${sandboxMode ? 'SANDBOX (synthetic fixture, zero network calls)' : 'LIVE (read-only HubSpot GET requests)'}`,\n  `Dry run: ${dryRun}`,\n  `Git commits: ${commitBlockers.length === 0 ? 'ARMED (subject to health and change checks)' : 'BLOCKED'}`,\n  `Remote diff read: ${remoteReadAllowed}`,\n  `Notifications: ${notifyAllowed ? 'ENABLED' : 'DISABLED'}`,\n];\n\nreturn [{ json: { config, safetyDecisions } }];\n"
+      },
+      "id": "d9d9fa8a-1489-45c9-a9af-2bec44024ae5",
+      "name": "Config & Safety Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -160,
+        100
+      ],
+      "notes": "Reads env vars, resolves fail-safe flags. Throws in live mode if HUBSPOT_ACCESS_TOKEN / HUBSPOT_PORTAL_ID are missing.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "66f76192-3c0f-4c1d-a615-c3fcf1d54a0e",
+              "leftValue": "={{ $('Config & Safety Gate').first().json.config.sandboxMode }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "db67056f-a9cf-4a41-a797-8cc0fc4fe08a",
+      "name": "Sandbox Mode?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        80,
+        100
+      ],
+      "notes": "true → synthetic fixture (offline). false → live read-only HubSpot export."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// Load Synthetic Fixture  (SANDBOX_MODE=true path - makes ZERO network calls)\n// The embedded object below is byte-for-byte the content of\n// sample-payloads/portal-metadata-fixture.json (the simulator verifies this).\n// It is honoured through the same export-scope flags as the live path.\n// ============================================================================\nconst FIXTURE = {\n  \"_meta\": {\n    \"synthetic\": true,\n    \"description\": \"Sanitized, fully synthetic HubSpot portal metadata for offline testing. No real portal, user, company or contact data. Shapes mirror HubSpot CRM v3 (schemas, properties, property groups, pipelines) and Automation v4 (flows) list responses.\",\n    \"fixtureVersion\": \"1.0.0\",\n    \"placeholderPortalId\": \"99000001\"\n  },\n  \"portalId\": \"99000001\",\n  \"accountInfo\": {\n    \"portalId\": 99000001,\n    \"accountType\": \"DEVELOPER_TEST\",\n    \"timeZone\": \"UTC\",\n    \"companyCurrency\": \"USD\",\n    \"uiDomain\": \"app.hubspot.example\"\n  },\n  \"customObjectSchemas\": [\n    {\n      \"id\": \"9900001\",\n      \"objectTypeId\": \"2-9900001\",\n      \"name\": \"vendor_contract\",\n      \"fullyQualifiedName\": \"p99000001_vendor_contract\",\n      \"labels\": {\n        \"singular\": \"Vendor Contract (Mock)\",\n        \"plural\": \"Vendor Contracts (Mock)\"\n      },\n      \"primaryDisplayProperty\": \"contract_name\",\n      \"secondaryDisplayProperties\": [\n        \"contract_status\"\n      ],\n      \"requiredProperties\": [\n        \"contract_name\"\n      ],\n      \"searchableProperties\": [\n        \"contract_name\",\n        \"contract_reference\"\n      ],\n      \"archived\": false,\n      \"createdAt\": \"2026-01-05T10:00:00.000Z\",\n      \"updatedAt\": \"2026-10-28T09:15:00.000Z\",\n      \"createdByUserId\": 90000001,\n      \"updatedByUserId\": 90000002,\n      \"associations\": [\n        {\n          \"id\": \"990001\",\n          \"name\": \"vendor_contract_to_company\",\n          \"fromObjectTypeId\": \"2-9900001\",\n          \"toObjectTypeId\": \"0-2\",\n          \"createdAt\": \"2026-01-05T10:00:00.000Z\",\n          \"updatedAt\": \"2026-01-05T10:00:00.000Z\"\n        },\n        {\n          \"id\": \"990002\",\n          \"name\": \"vendor_contract_to_deal\",\n          \"fromObjectTypeId\": \"2-9900001\",\n          \"toObjectTypeId\": \"0-3\",\n          \"createdAt\": \"2026-01-05T10:00:00.000Z\",\n          \"updatedAt\": \"2026-01-05T10:00:00.000Z\"\n        }\n      ],\n      \"properties\": [\n        {\n          \"name\": \"hs_object_id\",\n          \"label\": \"Record ID\",\n          \"type\": \"number\",\n          \"fieldType\": \"number\",\n          \"groupName\": \"vendor_contract_information\",\n          \"description\": \"\",\n          \"displayOrder\": -1,\n          \"hubspotDefined\": true,\n          \"hidden\": false,\n          \"calculated\": false,\n          \"externalOptions\": false,\n          \"hasUniqueValue\": true,\n          \"formField\": false,\n          \"options\": [],\n          \"archived\": false,\n          \"createdAt\": \"2026-01-05T10:00:00.000Z\",\n          \"updatedAt\": \"2026-01-05T10:00:00.000Z\"\n        },\n        {\n          \"name\": \"contract_name\",\n          \"label\": \"Contract Name\",\n          \"type\": \"string\",\n          \"fieldType\": \"text\",\n          \"groupName\": \"vendor_contract_information\",\n          \"description\": \"Synthetic display name for the mock contract.\",\n          \"displayOrder\": 1,\n          \"hubspotDefined\": false,\n          \"hidden\": false,\n          \"calculated\": false,\n          \"externalOptions\": false,\n          \"hasUniqueValue\": false,\n          \"formField\": true,\n          \"options\": [],\n          \"archived\": false,\n          \"createdAt\": \"2026-01-05T10:00:00.000Z\",\n          \"updatedAt\": \"2026-03-02T08:00:00.000Z\",\n          \"createdUserId\": \"90000001\",\n          \"updatedUserId\": \"90000002\"\n        },\n        {\n          \"name\": \"contract_reference\",\n          \"label\": \"Contract Reference\",\n          \"type\": \"string\",\n          \"fieldType\": \"text\",\n          \"groupName\": \"vendor_contract_information\",\n          \"description\": \"Mock external reference, e.g. VC-0001.\",\n          \"displayOrder\": 2,\n          \"hubspotDefined\": false,\n          \"hidden\": false,\n          \"calculated\": false,\n          \"externalOptions\": false,\n          \"hasUniqueValue\": true,\n          \"formField\": false,\n          \"options\": [],\n          \"archived\": false,\n          \"createdAt\": \"2026-01-05T10:00:00.000Z\",\n          \"updatedAt\": \"2026-01-05T10:00:00.000Z\",\n          \"createdUserId\": \"90000001\"\n        },\n        {\n          \"name\": \"contract_status\",\n          \"label\": \"Contract Status\",\n          \"type\": \"enumeration\",\n          \"fieldType\": \"select\",\n          \"groupName\": \"vendor_contract_information\",\n          \"description\": \"\",\n          \"displayOrder\": 3,\n          \"hubspotDefined\": false,\n          \"hidden\": false,\n          \"calculated\": false,\n          \"externalOptions\": false,\n          \"hasUniqueValue\": false,\n          \"formField\": true,\n          \"archived\": false,\n          \"createdAt\": \"2026-01-05T10:00:00.000Z\",\n          \"updatedAt\": \"2026-09-14T12:30:00.000Z\",\n          \"createdUserId\": \"90000001\",\n          \"updatedUserId\": \"90000003\",\n          \"options\": [\n            {\n              \"label\": \"Draft\",\n              \"value\": \"draft\",\n              \"displayOrder\": 0,\n              \"hidden\": false\n            },\n            {\n              \"label\": \"Active\",\n              \"value\": \"active\",\n              \"displayOrder\": 1,\n              \"hidden\": false\n            },\n            {\n              \"label\": \"Expired\",\n              \"value\": \"expired\",\n              \"displayOrder\": 2,\n              \"hidden\": false\n            }\n          ]\n        },\n        {\n          \"name\": \"annual_contract_value\",\n          \"label\": \"Annual Contract Value\",\n          \"type\": \"number\",\n          \"fieldType\": \"number\",\n          \"groupName\": \"vendor_contract_financials\",\n          \"description\": \"Mock currency amount.\",\n          \"displayOrder\": 4,\n          \"hubspotDefined\": false,\n          \"hidden\": false,\n          \"calculated\": false,\n          \"externalOptions\": false,\n          \"hasUniqueValue\": false,\n          \"formField\": false,\n          \"options\": [],\n          \"archived\": false,\n          \"showCurrencySymbol\": true,\n          \"createdAt\": \"2026-01-05T10:00:00.000Z\",\n          \"updatedAt\": \"2026-01-05T10:00:00.000Z\"\n        }\n      ]\n    }\n  ],\n  \"properties\": {\n    \"contacts\": [\n      {\n        \"name\": \"email\",\n        \"label\": \"Email\",\n        \"type\": \"string\",\n        \"fieldType\": \"text\",\n        \"groupName\": \"contactinformation\",\n        \"description\": \"\",\n        \"displayOrder\": -1,\n        \"hubspotDefined\": true,\n        \"hidden\": false,\n        \"calculated\": false,\n        \"externalOptions\": false,\n        \"hasUniqueValue\": false,\n        \"formField\": true,\n        \"options\": [],\n        \"archived\": false,\n        \"createdAt\": \"2019-08-06T02:41:52.000Z\",\n        \"updatedAt\": \"2026-10-01T00:00:00.000Z\"\n      },\n      {\n        \"name\": \"lifecyclestage\",\n        \"label\": \"Lifecycle Stage\",\n        \"type\": \"enumeration\",\n        \"fieldType\": \"radio\",\n        \"groupName\": \"contactinformation\",\n        \"description\": \"\",\n        \"displayOrder\": -1,\n        \"hubspotDefined\": true,\n        \"hidden\": false,\n        \"calculated\": false,\n        \"externalOptions\": false,\n        \"hasUniqueValue\": false,\n        \"formField\": true,\n        \"archived\": false,\n        \"createdAt\": \"2019-08-06T02:41:52.000Z\",\n        \"updatedAt\": \"2026-10-01T00:00:00.000Z\",\n        \"options\": [\n          {\n            \"label\": \"Subscriber\",\n            \"value\": \"subscriber\",\n            \"displayOrder\": 0,\n            \"hidden\": false\n          },\n          {\n            \"label\": \"Lead\",\n            \"value\": \"lead\",\n            \"displayOrder\": 1,\n            \"hidden\": false\n          },\n          {\n            \"label\": \"Customer\",\n            \"value\": \"customer\",\n            \"displayOrder\": 2,\n            \"hidden\": false\n          }\n        ]\n      },\n      {\n        \"name\": \"lead_source_detail\",\n        \"label\": \"Lead Source Detail (Mock)\",\n        \"type\": \"enumeration\",\n        \"fieldType\": \"select\",\n        \"groupName\": \"revops_attribution\",\n        \"description\": \"Synthetic attribution picklist.\",\n        \"displayOrder\": 1,\n        \"hubspotDefined\": false,\n        \"hidden\": false,\n        \"calculated\": false,\n        \"externalOptions\": false,\n        \"hasUniqueValue\": false,\n        \"formField\": true,\n        \"archived\": false,\n        \"createdAt\": \"2026-02-10T09:00:00.000Z\",\n        \"updatedAt\": \"2026-08-21T16:45:00.000Z\",\n        \"createdUserId\": \"90000001\",\n        \"updatedUserId\": \"90000002\",\n        \"options\": [\n          {\n            \"label\": \"Webinar\",\n            \"value\": \"webinar\",\n            \"displayOrder\": 2,\n            \"hidden\": false\n          },\n          {\n            \"label\": \"Partner Referral\",\n            \"value\": \"partner_referral\",\n            \"displayOrder\": 1,\n            \"hidden\": false\n          },\n          {\n            \"label\": \"Paid Search\",\n            \"value\": \"paid_search\",\n            \"displayOrder\": 0,\n            \"hidden\": false\n          },\n          {\n            \"label\": \"Legacy Trade Show\",\n            \"value\": \"legacy_trade_show\",\n            \"displayOrder\": 3,\n            \"hidden\": true\n          }\n        ]\n      },\n      {\n        \"name\": \"icp_fit_score\",\n        \"label\": \"ICP Fit Score\",\n        \"type\": \"number\",\n        \"fieldType\": \"number\",\n        \"groupName\": \"revops_scoring\",\n        \"description\": \"0-100 synthetic fit score.\",\n        \"displayOrder\": 2,\n        \"hubspotDefined\": false,\n        \"hidden\": false,\n        \"calculated\": false,\n        \"externalOptions\": false,\n        \"hasUniqueValue\": false,\n        \"formField\": false,\n        \"options\": [],\n        \"archived\": false,\n        \"createdAt\": \"2026-02-10T09:00:00.000Z\",\n        \"updatedAt\": \"2026-02-10T09:00:00.000Z\",\n        \"createdUserId\": \"90000001\"\n      },\n      {\n        \"name\": \"routing_region\",\n        \"label\": \"Routing Region\",\n        \"type\": \"enumeration\",\n        \"fieldType\": \"select\",\n        \"groupName\": \"revops_routing\",\n        \"description\": \"Mock territory for lead routing.\",\n        \"displayOrder\": 3,\n        \"hubspotDefined\": false,\n        \"hidden\": false,\n        \"calculated\": false,\n        \"externalOptions\": false,\n        \"hasUniqueValue\": false,\n        \"formField\": false,\n        \"archived\": false,\n        \"createdAt\": \"2026-03-01T09:00:00.000Z\",\n        \"updatedAt\": \"2026-03-01T09:00:00.000Z\",\n        \"createdUserId\": \"90000002\",\n        \"options\": [\n          {\n            \"label\": \"AMER\",\n            \"value\": \"amer\",\n            \"displayOrder\": 0,\n            \"hidden\": false\n          },\n          {\n            \"label\": \"EMEA\",\n            \"value\": \"emea\",\n            \"displayOrder\": 1,\n            \"hidden\": false\n          },\n          {\n            \"label\": \"APAC\",\n            \"value\": \"apac\",\n            \"displayOrder\": 2,\n            \"hidden\": false\n          }\n        ]\n      },\n      {\n        \"name\": \"consent_basis_note\",\n        \"label\": \"Consent Basis Note\",\n        \"type\": \"string\",\n        \"fieldType\": \"textarea\",\n        \"groupName\": \"revops_compliance\",\n        \"description\": \"Synthetic free-text compliance note field.\",\n        \"displayOrder\": 4,\n        \"hubspotDefined\": false,\n        \"hidden\": false,\n        \"calculated\": false,\n        \"externalOptions\": false,\n        \"hasUniqueValue\": false,\n        \"formField\": false,\n        \"options\": [],\n        \"archived\": false,\n        \"createdAt\": \"2026-04-15T09:00:00.000Z\",\n        \"updatedAt\": \"2026-04-15T09:00:00.000Z\",\n        \"createdUserId\": \"90000003\"\n      }\n    ],\n    \"companies\": [\n      {\n        \"name\": \"domain\",\n        \"label\": \"Company Domain Name\",\n        \"type\": \"string\",\n        \"fieldType\": \"text\",\n        \"groupName\": \"companyinformation\",\n        \"description\": \"\",\n        \"displayOrder\": -1,\n        \"hubspotDefined\": true,\n        \"hidden\": false,\n        \"calculated\": false,\n        \"externalOptions\": false,\n        \"hasUniqueValue\": false,\n        \"formField\": true,\n        \"options\": [],\n        \"archived\": false,\n        \"createdAt\": \"2019-08-06T02:41:52.000Z\",\n        \"updatedAt\": \"2026-10-01T00:00:00.000Z\"\n      },\n      {\n        \"name\": \"account_tier\",\n        \"label\": \"Account Tier\",\n        \"type\": \"enumeration\",\n        \"fieldType\": \"select\",\n        \"groupName\": \"revops_segmentation\",\n        \"description\": \"Synthetic tiering picklist.\",\n        \"displayOrder\": 1,\n        \"hubspotDefined\": false,\n        \"hidden\": false,\n        \"calculated\": false,\n        \"externalOptions\": false,\n        \"hasUniqueValue\": false,\n        \"formField\": false,\n        \"archived\": false,\n        \"createdAt\": \"2026-01-20T09:00:00.000Z\",\n        \"updatedAt\": \"2026-07-07T07:07:00.000Z\",\n        \"createdUserId\": \"90000001\",\n        \"updatedUserId\": \"90000001\",\n        \"options\": [\n          {\n            \"label\": \"Tier 1\",\n            \"value\": \"tier_1\",\n            \"displayOrder\": 0,\n            \"hidden\": false\n          },\n          {\n            \"label\": \"Tier 2\",\n            \"value\": \"tier_2\",\n            \"displayOrder\": 1,\n            \"hidden\": false\n          },\n          {\n            \"label\": \"Tier 3\",\n            \"value\": \"tier_3\",\n            \"displayOrder\": 2,\n            \"hidden\": false\n          }\n        ]\n      },\n      {\n        \"name\": \"arr_band\",\n        \"label\": \"ARR Band\",\n        \"type\": \"enumeration\",\n        \"fieldType\": \"select\",\n        \"groupName\": \"revops_segmentation\",\n        \"description\": \"\",\n        \"displayOrder\": 2,\n        \"hubspotDefined\": false,\n        \"hidden\": false,\n        \"calculated\": false,\n        \"externalOptions\": false,\n        \"hasUniqueValue\": false,\n        \"formField\": false,\n        \"archived\": false,\n        \"createdAt\": \"2026-01-20T09:00:00.000Z\",\n        \"updatedAt\": \"2026-01-20T09:00:00.000Z\",\n        \"options\": []\n      }\n    ],\n    \"deals\": [\n      {\n        \"name\": \"dealname\",\n        \"label\": \"Deal Name\",\n        \"type\": \"string\",\n        \"fieldType\": \"text\",\n        \"groupName\": \"dealinformation\",\n        \"description\": \"\",\n        \"displayOrder\": -1,\n        \"hubspotDefined\": true,\n        \"hidden\": false,\n        \"calculated\": false,\n        \"externalOptions\": false,\n        \"hasUniqueValue\": false,\n        \"formField\": true,\n        \"options\": [],\n        \"archived\": false,\n        \"createdAt\": \"2019-08-06T02:41:52.000Z\",\n        \"updatedAt\": \"2026-10-01T00:00:00.000Z\"\n      },\n      {\n        \"name\": \"amount\",\n        \"label\": \"Amount\",\n        \"type\": \"number\",\n        \"fieldType\": \"number\",\n        \"groupName\": \"dealinformation\",\n        \"description\": \"\",\n        \"displayOrder\": -1,\n        \"hubspotDefined\": true,\n        \"hidden\": false,\n        \"calculated\": false,\n        \"externalOptions\": false,\n        \"hasUniqueValue\": false,\n        \"formField\": true,\n        \"options\": [],\n        \"archived\": false,\n        \"showCurrencySymbol\": true,\n        \"createdAt\": \"2019-08-06T02:41:52.000Z\",\n        \"updatedAt\": \"2026-10-01T00:00:00.000Z\"\n      },\n      {\n        \"name\": \"deal_tier\",\n        \"label\": \"Deal Tier\",\n        \"type\": \"enumeration\",\n        \"fieldType\": \"select\",\n        \"groupName\": \"revops_deal_qualification\",\n        \"description\": \"Synthetic deal size tier.\",\n        \"displayOrder\": 1,\n        \"hubspotDefined\": false,\n        \"hidden\": false,\n        \"calculated\": false,\n        \"externalOptions\": false,\n        \"hasUniqueValue\": false,\n        \"formField\": false,\n        \"archived\": false,\n        \"createdAt\": \"2026-01-12T09:00:00.000Z\",\n        \"updatedAt\": \"2026-06-30T10:00:00.000Z\",\n        \"createdUserId\": \"90000001\",\n        \"updatedUserId\": \"90000002\",\n        \"options\": [\n          {\n            \"label\": \"SMB\",\n            \"value\": \"smb\",\n            \"displayOrder\": 0,\n            \"hidden\": false\n          },\n          {\n            \"label\": \"Mid-Market\",\n            \"value\": \"mid_market\",\n            \"displayOrder\": 1,\n            \"hidden\": false\n          },\n          {\n            \"label\": \"Enterprise\",\n            \"value\": \"enterprise\",\n            \"displayOrder\": 2,\n            \"hidden\": false\n          }\n        ]\n      },\n      {\n        \"name\": \"meddpicc_champion_identified\",\n        \"label\": \"Champion Identified\",\n        \"type\": \"bool\",\n        \"fieldType\": \"booleancheckbox\",\n        \"groupName\": \"revops_deal_qualification\",\n        \"description\": \"\",\n        \"displayOrder\": 2,\n        \"hubspotDefined\": false,\n        \"hidden\": false,\n        \"calculated\": false,\n        \"externalOptions\": false,\n        \"hasUniqueValue\": false,\n        \"formField\": false,\n        \"archived\": false,\n        \"createdAt\": \"2026-01-12T09:00:00.000Z\",\n        \"updatedAt\": \"2026-01-12T09:00:00.000Z\",\n        \"options\": [\n          {\n            \"label\": \"Yes\",\n            \"value\": \"true\",\n            \"displayOrder\": 0,\n            \"hidden\": false\n          },\n          {\n            \"label\": \"No\",\n            \"value\": \"false\",\n            \"displayOrder\": 1,\n            \"hidden\": false\n          }\n        ]\n      },\n      {\n        \"name\": \"forecast_commit_override\",\n        \"label\": \"Forecast Commit Override\",\n        \"type\": \"enumeration\",\n        \"fieldType\": \"select\",\n        \"groupName\": \"revops_forecasting\",\n        \"description\": \"Mock manager override for forecast category.\",\n        \"displayOrder\": 3,\n        \"hubspotDefined\": false,\n        \"hidden\": false,\n        \"calculated\": false,\n        \"externalOptions\": false,\n        \"hasUniqueValue\": false,\n        \"formField\": false,\n        \"archived\": false,\n        \"createdAt\": \"2026-05-05T09:00:00.000Z\",\n        \"updatedAt\": \"2026-05-05T09:00:00.000Z\",\n        \"createdUserId\": \"90000002\",\n        \"options\": [\n          {\n            \"label\": \"Commit\",\n            \"value\": \"commit\",\n            \"displayOrder\": 0,\n            \"hidden\": false\n          },\n          {\n            \"label\": \"Best Case\",\n            \"value\": \"best_case\",\n            \"displayOrder\": 1,\n            \"hidden\": false\n          },\n          {\n            \"label\": \"Pipeline\",\n            \"value\": \"pipeline\",\n            \"displayOrder\": 2,\n            \"hidden\": false\n          }\n        ]\n      },\n      {\n        \"name\": \"weighted_amount_calc\",\n        \"label\": \"Weighted Amount (Calc)\",\n        \"type\": \"number\",\n        \"fieldType\": \"calculation_equation\",\n        \"groupName\": \"revops_forecasting\",\n        \"description\": \"Synthetic calculated property.\",\n        \"displayOrder\": 4,\n        \"hubspotDefined\": false,\n        \"hidden\": false,\n        \"calculated\": true,\n        \"externalOptions\": false,\n        \"hasUniqueValue\": false,\n        \"formField\": false,\n        \"options\": [],\n        \"archived\": false,\n        \"calculationFormula\": \"amount * hs_deal_stage_probability\",\n        \"createdAt\": \"2026-05-05T09:00:00.000Z\",\n        \"updatedAt\": \"2026-05-05T09:00:00.000Z\"\n      }\n    ],\n    \"tickets\": [\n      {\n        \"name\": \"subject\",\n        \"label\": \"Ticket name\",\n        \"type\": \"string\",\n        \"fieldType\": \"text\",\n        \"groupName\": \"ticketinformation\",\n        \"description\": \"\",\n        \"displayOrder\": -1,\n        \"hubspotDefined\": true,\n        \"hidden\": false,\n        \"calculated\": false,\n        \"externalOptions\": false,\n        \"hasUniqueValue\": false,\n        \"formField\": true,\n        \"options\": [],\n        \"archived\": false,\n        \"createdAt\": \"2019-08-06T02:41:52.000Z\",\n        \"updatedAt\": \"2026-10-01T00:00:00.000Z\"\n      },\n      {\n        \"name\": \"escalation_level\",\n        \"label\": \"Escalation Level\",\n        \"type\": \"enumeration\",\n        \"fieldType\": \"select\",\n        \"groupName\": \"service_ops\",\n        \"description\": \"Synthetic escalation picklist.\",\n        \"displayOrder\": 1,\n        \"hubspotDefined\": false,\n        \"hidden\": false,\n        \"calculated\": false,\n        \"externalOptions\": false,\n        \"hasUniqueValue\": false,\n        \"formField\": false,\n        \"archived\": false,\n        \"createdAt\": \"2026-02-02T09:00:00.000Z\",\n        \"updatedAt\": \"2026-02-02T09:00:00.000Z\",\n        \"options\": [\n          {\n            \"label\": \"L1\",\n            \"value\": \"l1\",\n            \"displayOrder\": 0,\n            \"hidden\": false\n          },\n          {\n            \"label\": \"L2\",\n            \"value\": \"l2\",\n            \"displayOrder\": 1,\n            \"hidden\": false\n          },\n          {\n            \"label\": \"L3\",\n            \"value\": \"l3\",\n            \"displayOrder\": 2,\n            \"hidden\": false\n          }\n        ]\n      },\n      {\n        \"name\": \"sla_breach_risk\",\n        \"label\": \"SLA Breach Risk\",\n        \"type\": \"bool\",\n        \"fieldType\": \"booleancheckbox\",\n        \"groupName\": \"service_ops\",\n        \"description\": \"\",\n        \"displayOrder\": 2,\n        \"hubspotDefined\": false,\n        \"hidden\": false,\n        \"calculated\": false,\n        \"externalOptions\": false,\n        \"hasUniqueValue\": false,\n        \"formField\": false,\n        \"archived\": false,\n        \"createdAt\": \"2026-02-02T09:00:00.000Z\",\n        \"updatedAt\": \"2026-02-02T09:00:00.000Z\",\n        \"options\": [\n          {\n            \"label\": \"Yes\",\n            \"value\": \"true\",\n            \"displayOrder\": 0,\n            \"hidden\": false\n          },\n          {\n            \"label\": \"No\",\n            \"value\": \"false\",\n            \"displayOrder\": 1,\n            \"hidden\": false\n          }\n        ]\n      }\n    ]\n  },\n  \"propertyGroups\": {\n    \"contacts\": [\n      {\n        \"name\": \"contactinformation\",\n        \"label\": \"Contact information\",\n        \"displayOrder\": -1,\n        \"archived\": false\n      },\n      {\n        \"name\": \"revops_attribution\",\n        \"label\": \"RevOps: Attribution (Mock)\",\n        \"displayOrder\": 10,\n        \"archived\": false\n      },\n      {\n        \"name\": \"revops_scoring\",\n        \"label\": \"RevOps: Scoring (Mock)\",\n        \"displayOrder\": 11,\n        \"archived\": false\n      },\n      {\n        \"name\": \"revops_routing\",\n        \"label\": \"RevOps: Routing (Mock)\",\n        \"displayOrder\": 12,\n        \"archived\": false\n      },\n      {\n        \"name\": \"revops_compliance\",\n        \"label\": \"RevOps: Compliance (Mock)\",\n        \"displayOrder\": 13,\n        \"archived\": false\n      }\n    ],\n    \"companies\": [\n      {\n        \"name\": \"companyinformation\",\n        \"label\": \"Company information\",\n        \"displayOrder\": -1,\n        \"archived\": false\n      },\n      {\n        \"name\": \"revops_segmentation\",\n        \"label\": \"RevOps: Segmentation (Mock)\",\n        \"displayOrder\": 10,\n        \"archived\": false\n      }\n    ],\n    \"deals\": [\n      {\n        \"name\": \"dealinformation\",\n        \"label\": \"Deal information\",\n        \"displayOrder\": -1,\n        \"archived\": false\n      },\n      {\n        \"name\": \"revops_deal_qualification\",\n        \"label\": \"RevOps: Qualification (Mock)\",\n        \"displayOrder\": 10,\n        \"archived\": false\n      },\n      {\n        \"name\": \"revops_forecasting\",\n        \"label\": \"RevOps: Forecasting (Mock)\",\n        \"displayOrder\": 11,\n        \"archived\": false\n      }\n    ],\n    \"tickets\": [\n      {\n        \"name\": \"ticketinformation\",\n        \"label\": \"Ticket information\",\n        \"displayOrder\": -1,\n        \"archived\": false\n      },\n      {\n        \"name\": \"service_ops\",\n        \"label\": \"Service Ops (Mock)\",\n        \"displayOrder\": 10,\n        \"archived\": false\n      }\n    ]\n  },\n  \"pipelines\": {\n    \"deals\": [\n      {\n        \"id\": \"default\",\n        \"label\": \"New Business (Mock)\",\n        \"displayOrder\": 0,\n        \"archived\": false,\n        \"createdAt\": \"2019-08-06T02:41:52.000Z\",\n        \"updatedAt\": \"2026-09-01T09:00:00.000Z\",\n        \"stages\": [\n          {\n            \"id\": \"appointmentscheduled\",\n            \"label\": \"Discovery\",\n            \"displayOrder\": 0,\n            \"archived\": false,\n            \"metadata\": {\n              \"isClosed\": \"false\",\n              \"probability\": \"0.1\"\n            },\n            \"writePermissions\": \"CRM_PERMISSIONS_ENFORCEMENT\",\n            \"createdAt\": \"2019-08-06T02:41:52.000Z\",\n            \"updatedAt\": \"2026-09-01T09:00:00.000Z\"\n          },\n          {\n            \"id\": \"qualifiedtobuy\",\n            \"label\": \"Qualified\",\n            \"displayOrder\": 1,\n            \"archived\": false,\n            \"metadata\": {\n              \"isClosed\": \"false\",\n              \"probability\": \"0.25\"\n            },\n            \"writePermissions\": \"CRM_PERMISSIONS_ENFORCEMENT\",\n            \"createdAt\": \"2019-08-06T02:41:52.000Z\",\n            \"updatedAt\": \"2026-09-01T09:00:00.000Z\"\n          },\n          {\n            \"id\": \"presentationscheduled\",\n            \"label\": \"Solution Review\",\n            \"displayOrder\": 2,\n            \"archived\": false,\n            \"metadata\": {\n              \"isClosed\": \"false\",\n              \"probability\": \"0.5\"\n            },\n            \"writePermissions\": \"CRM_PERMISSIONS_ENFORCEMENT\",\n            \"createdAt\": \"2019-08-06T02:41:52.000Z\",\n            \"updatedAt\": \"2026-09-01T09:00:00.000Z\"\n          },\n          {\n            \"id\": \"contractsent\",\n            \"label\": \"Contract Sent\",\n            \"displayOrder\": 3,\n            \"archived\": false,\n            \"metadata\": {\n              \"isClosed\": \"false\",\n              \"probability\": \"0.8\"\n            },\n            \"writePermissions\": \"CRM_PERMISSIONS_ENFORCEMENT\",\n            \"createdAt\": \"2019-08-06T02:41:52.000Z\",\n            \"updatedAt\": \"2026-09-01T09:00:00.000Z\"\n          },\n          {\n            \"id\": \"closedwon\",\n            \"label\": \"Closed Won\",\n            \"displayOrder\": 4,\n            \"archived\": false,\n            \"metadata\": {\n              \"isClosed\": \"true\",\n              \"probability\": \"1.0\"\n            },\n            \"writePermissions\": \"CRM_PERMISSIONS_ENFORCEMENT\",\n            \"createdAt\": \"2019-08-06T02:41:52.000Z\",\n            \"updatedAt\": \"2026-09-01T09:00:00.000Z\"\n          },\n          {\n            \"id\": \"closedlost\",\n            \"label\": \"Closed Lost\",\n            \"displayOrder\": 5,\n            \"archived\": false,\n            \"metadata\": {\n              \"isClosed\": \"true\",\n              \"probability\": \"0.0\"\n            },\n            \"writePermissions\": \"CRM_PERMISSIONS_ENFORCEMENT\",\n            \"createdAt\": \"2019-08-06T02:41:52.000Z\",\n            \"updatedAt\": \"2026-09-01T09:00:00.000Z\"\n          }\n        ]\n      },\n      {\n        \"id\": \"99100001\",\n        \"label\": \"Renewals (Mock)\",\n        \"displayOrder\": 1,\n        \"archived\": false,\n        \"createdAt\": \"2026-03-10T09:00:00.000Z\",\n        \"updatedAt\": \"2026-10-20T09:00:00.000Z\",\n        \"stages\": [\n          {\n            \"id\": \"99100011\",\n            \"label\": \"Renewal Open\",\n            \"displayOrder\": 0,\n            \"archived\": false,\n            \"metadata\": {\n              \"isClosed\": \"false\",\n              \"probability\": \"0.6\"\n            },\n            \"writePermissions\": \"CRM_PERMISSIONS_ENFORCEMENT\",\n            \"createdAt\": \"2026-03-10T09:00:00.000Z\",\n            \"updatedAt\": \"2026-03-10T09:00:00.000Z\"\n          },\n          {\n            \"id\": \"99100012\",\n            \"label\": \"Renewal At Risk\",\n            \"displayOrder\": 1,\n            \"archived\": false,\n            \"metadata\": {\n              \"isClosed\": \"false\",\n              \"probability\": \"0.3\"\n            },\n            \"writePermissions\": \"CRM_PERMISSIONS_ENFORCEMENT\",\n            \"createdAt\": \"2026-03-10T09:00:00.000Z\",\n            \"updatedAt\": \"2026-10-20T09:00:00.000Z\"\n          },\n          {\n            \"id\": \"99100013\",\n            \"label\": \"Renewed\",\n            \"displayOrder\": 2,\n            \"archived\": false,\n            \"metadata\": {\n              \"isClosed\": \"true\",\n              \"probability\": \"1.0\"\n            },\n            \"writePermissions\": \"CRM_PERMISSIONS_ENFORCEMENT\",\n            \"createdAt\": \"2026-03-10T09:00:00.000Z\",\n            \"updatedAt\": \"2026-03-10T09:00:00.000Z\"\n          },\n          {\n            \"id\": \"99100014\",\n            \"label\": \"Churned\",\n            \"displayOrder\": 3,\n            \"archived\": false,\n            \"metadata\": {\n              \"isClosed\": \"true\",\n              \"probability\": \"0.0\"\n            },\n            \"writePermissions\": \"CRM_PERMISSIONS_ENFORCEMENT\",\n            \"createdAt\": \"2026-03-10T09:00:00.000Z\",\n            \"updatedAt\": \"2026-03-10T09:00:00.000Z\"\n          }\n        ]\n      }\n    ],\n    \"tickets\": [\n      {\n        \"id\": \"0\",\n        \"label\": \"Support Pipeline (Mock)\",\n        \"displayOrder\": 0,\n        \"archived\": false,\n        \"createdAt\": \"2019-08-06T02:41:52.000Z\",\n        \"updatedAt\": \"2026-06-01T09:00:00.000Z\",\n        \"stages\": [\n          {\n            \"id\": \"1\",\n            \"label\": \"New\",\n            \"displayOrder\": 0,\n            \"archived\": false,\n            \"metadata\": {\n              \"ticketState\": \"OPEN\"\n            },\n            \"createdAt\": \"2019-08-06T02:41:52.000Z\",\n            \"updatedAt\": \"2026-06-01T09:00:00.000Z\"\n          },\n          {\n            \"id\": \"2\",\n            \"label\": \"Waiting on contact\",\n            \"displayOrder\": 1,\n            \"archived\": false,\n            \"metadata\": {\n              \"ticketState\": \"OPEN\"\n            },\n            \"createdAt\": \"2019-08-06T02:41:52.000Z\",\n            \"updatedAt\": \"2026-06-01T09:00:00.000Z\"\n          },\n          {\n            \"id\": \"3\",\n            \"label\": \"Waiting on us\",\n            \"displayOrder\": 2,\n            \"archived\": false,\n            \"metadata\": {\n              \"ticketState\": \"OPEN\"\n            },\n            \"createdAt\": \"2019-08-06T02:41:52.000Z\",\n            \"updatedAt\": \"2026-06-01T09:00:00.000Z\"\n          },\n          {\n            \"id\": \"4\",\n            \"label\": \"Closed\",\n            \"displayOrder\": 3,\n            \"archived\": false,\n            \"metadata\": {\n              \"ticketState\": \"CLOSED\"\n            },\n            \"createdAt\": \"2019-08-06T02:41:52.000Z\",\n            \"updatedAt\": \"2026-06-01T09:00:00.000Z\"\n          }\n        ]\n      }\n    ]\n  },\n  \"workflows\": [\n    {\n      \"id\": \"990000101\",\n      \"name\": \"SYNTHETIC - Inbound Lead Routing (Mock)\",\n      \"flowType\": \"WORKFLOW\",\n      \"objectTypeId\": \"0-1\",\n      \"isEnabled\": true,\n      \"revisionId\": \"14\",\n      \"createdAt\": \"2026-02-11T09:00:00.000Z\",\n      \"updatedAt\": \"2026-10-02T09:00:00.000Z\"\n    },\n    {\n      \"id\": \"990000102\",\n      \"name\": \"SYNTHETIC - Deal Stage SLA Alerts (Mock)\",\n      \"flowType\": \"WORKFLOW\",\n      \"objectTypeId\": \"0-3\",\n      \"isEnabled\": true,\n      \"revisionId\": \"7\",\n      \"createdAt\": \"2026-03-15T09:00:00.000Z\",\n      \"updatedAt\": \"2026-09-19T09:00:00.000Z\"\n    },\n    {\n      \"id\": \"990000103\",\n      \"name\": \"SYNTHETIC - Renewal Risk Escalation (Mock)\",\n      \"flowType\": \"WORKFLOW\",\n      \"objectTypeId\": \"0-3\",\n      \"isEnabled\": false,\n      \"revisionId\": \"3\",\n      \"createdAt\": \"2026-04-20T09:00:00.000Z\",\n      \"updatedAt\": \"2026-04-22T09:00:00.000Z\"\n    },\n    {\n      \"id\": \"990000104\",\n      \"name\": \"SYNTHETIC - Vendor Contract Expiry Reminder (Mock)\",\n      \"flowType\": \"WORKFLOW\",\n      \"objectTypeId\": \"2-9900001\",\n      \"isEnabled\": true,\n      \"revisionId\": \"5\",\n      \"createdAt\": \"2026-05-30T09:00:00.000Z\",\n      \"updatedAt\": \"2026-08-11T09:00:00.000Z\"\n    }\n  ]\n};\n\nconst { config } = $('Config & Safety Gate').first().json;\nconst s = config.scope;\nconst pick = (obj, keys) => Object.fromEntries(keys.filter((k) => obj && obj[k]).map((k) => [k, obj[k]]));\n\nconst raw = {\n  portalId: String(FIXTURE.portalId),\n  accountInfo: FIXTURE.accountInfo || null,\n  customObjectSchemas: s.customObjects ? FIXTURE.customObjectSchemas || [] : null,\n  properties: s.properties ? pick(FIXTURE.properties, s.objectTypes) : null,\n  propertyGroups: s.propertyGroups ? pick(FIXTURE.propertyGroups, s.objectTypes) : null,\n  pipelines: s.pipelines ? pick(FIXTURE.pipelines, s.pipelineObjectTypes) : null,\n  workflows: s.workflows ? FIXTURE.workflows || [] : null,\n  workflowsApi: 'v4',\n};\n\nconst warnings = [];\nfor (const t of s.objectTypes) {\n  if (s.properties && !(FIXTURE.properties || {})[t]) warnings.push(`Fixture has no properties for object type \"${t}\"`);\n}\n\nreturn [{ json: { source: 'synthetic-fixture', raw, endpointErrors: [], warnings } }];\n"
+      },
+      "id": "e5229177-ef56-455d-a491-7a5048c69034",
+      "name": "Load Synthetic Fixture",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        340,
+        -120
+      ],
+      "notes": "Offline fixture. No network.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// Build HubSpot Export Requests  (LIVE path only)\n// Emits one item per read-only GET request. The HTTP node that follows sends\n// them with rate-limit friendly batching; \"Collect & Verify API Responses\"\n// re-pairs responses to requests by index.\n// Workflows are fetched separately (paginated) by \"HubSpot Workflows Export\".\n// ============================================================================\nconst { config } = $('Config & Safety Gate').first().json;\nconst base = config.hubspot.apiBase;\nconst s = config.scope;\nconst reqs = [];\nconst add = (key, path, required = true) => reqs.push({ json: { key, url: `${base}${path}`, method: 'GET', required } });\n\nif (config.normalization.verifyPortalId) add('accountInfo', '/account-info/v3/details', false);\nif (s.customObjects) add('customObjectSchemas', '/crm/v3/schemas?archived=false');\nfor (const t of s.objectTypes) {\n  if (s.properties) add(`properties:${t}`, `/crm/v3/properties/${encodeURIComponent(t)}?archived=false`);\n  if (s.propertyGroups) add(`propertyGroups:${t}`, `/crm/v3/properties/${encodeURIComponent(t)}/groups?archived=false`);\n}\nif (s.pipelines) {\n  for (const t of s.pipelineObjectTypes) add(`pipelines:${t}`, `/crm/v3/pipelines/${encodeURIComponent(t)}`);\n}\n\nif (reqs.length === 0) {\n  throw new Error('Export scope is empty: enable at least one EXPORT_* flag or keep the defaults.');\n}\nreturn reqs;\n"
+      },
+      "id": "58a1711b-5134-45ef-ab4a-91b5c52982da",
+      "name": "Build HubSpot Export Requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        340,
+        260
+      ],
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.HUBSPOT_ACCESS_TOKEN }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "batching": {
+            "batch": {
+              "batchSize": 4,
+              "batchInterval": 1100
+            }
+          }
+        }
+      },
+      "id": "84a731a2-fcc5-4a32-af59-734155d9d22e",
+      "name": "HubSpot Metadata Export (v3 API)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        580,
+        260
+      ],
+      "notes": "GET only. Batched to stay well under HubSpot private-app rate limits. Per-endpoint errors are recorded, not fatal.",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// Collect & Verify API Responses  (LIVE path only)\n// Pairs each HTTP response with its originating request (same index order),\n// records per-endpoint failures instead of aborting, and enforces the portal\n// guard: a token that belongs to a different portal than HUBSPOT_PORTAL_ID\n// stops the run before anything can be written to Git.\n// ============================================================================\nconst { config } = $('Config & Safety Gate').first().json;\nconst requests = $('Build HubSpot Export Requests').all();\nconst responses = $input.all();\n\nconst raw = {\n  portalId: config.portalId,\n  accountInfo: null,\n  customObjectSchemas: config.scope.customObjects ? [] : null,\n  properties: config.scope.properties ? {} : null,\n  propertyGroups: config.scope.propertyGroups ? {} : null,\n  pipelines: config.scope.pipelines ? {} : null,\n  workflows: null,\n  workflowsApi: config.scope.workflowsApi,\n};\nconst endpointErrors = [];\nconst warnings = [];\n\nconst errMessage = (body) => {\n  const e = body && body.error;\n  if (!e) return null;\n  if (typeof e === 'string') return e;\n  return e.message || e.description || JSON.stringify(e).slice(0, 300);\n};\n\nif (responses.length !== requests.length) {\n  warnings.push(`Response count (${responses.length}) differs from request count (${requests.length}); pairing by index may be unreliable.`);\n}\n\nrequests.forEach((req, i) => {\n  const { key, required } = req.json;\n  const body = responses[i] ? responses[i].json : undefined;\n  const failure = body === undefined ? 'No response item' : errMessage(body);\n  if (failure) {\n    if (required) endpointErrors.push({ key, message: String(failure).slice(0, 300) });\n    else warnings.push(`Optional endpoint ${key} failed: ${String(failure).slice(0, 200)}`);\n    return;\n  }\n  const [kind, objectType] = key.split(':');\n  const results = Array.isArray(body.results) ? body.results : null;\n  switch (kind) {\n    case 'accountInfo':\n      raw.accountInfo = body;\n      break;\n    case 'customObjectSchemas':\n      raw.customObjectSchemas = results || [];\n      break;\n    case 'properties':\n      raw.properties[objectType] = results || [];\n      break;\n    case 'propertyGroups':\n      raw.propertyGroups[objectType] = results || [];\n      break;\n    case 'pipelines':\n      raw.pipelines[objectType] = results || [];\n      break;\n    default:\n      warnings.push(`Unrecognised request key ${key}`);\n  }\n  if (kind !== 'accountInfo' && !results) warnings.push(`Endpoint ${key} returned no \"results\" array`);\n});\n\n// ---- Portal guard ----------------------------------------------------------\nif (config.normalization.verifyPortalId) {\n  if (raw.accountInfo && raw.accountInfo.portalId !== undefined) {\n    const actual = String(raw.accountInfo.portalId);\n    if (actual !== String(config.portalId)) {\n      throw new Error(\n        `Portal guard: the HubSpot token belongs to portal ${actual} but HUBSPOT_PORTAL_ID is ${config.portalId}. ` +\n        'Refusing to continue so one portal is never filed under another portal\\'s backup folder.'\n      );\n    }\n  } else {\n    warnings.push('Portal guard could not read /account-info/v3/details; portal ID was not independently verified.');\n  }\n}\n\nreturn [{ json: { source: 'hubspot-api', raw, endpointErrors, warnings } }];\n"
+      },
+      "id": "a5685577-4513-4212-a045-3bf0bcc1754f",
+      "name": "Collect & Verify API Responses",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        820,
+        260
+      ],
+      "notes": "Pairs responses to requests and enforces the portal guard.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "db29422f-ac66-479c-a433-c95681de5603",
+              "leftValue": "={{ $('Config & Safety Gate').first().json.config.scope.workflows }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "eefb1691-13ba-4e52-a7b8-33bb83ed80db",
+      "name": "Workflows In Scope?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Config & Safety Gate').first().json.config.hubspot.workflowsUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.HUBSPOT_ACCESS_TOKEN }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "pagination": {
+            "pagination": {
+              "paginationMode": "updateAParameterInEachRequest",
+              "parameters": {
+                "parameters": [
+                  {
+                    "type": "qs",
+                    "name": "after",
+                    "value": "={{ $response.body.paging && $response.body.paging.next ? $response.body.paging.next.after : undefined }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body.paging || !$response.body.paging.next || !$response.body.paging.next.after }}",
+              "limitPagesFetched": true,
+              "maxRequests": 50,
+              "requestInterval": 300
+            }
+          }
+        }
+      },
+      "id": "659860d2-8147-4dfd-abcb-ec45bba4c3a5",
+      "name": "HubSpot Workflows Export",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1300,
+        160
+      ],
+      "notes": "v4 /automation/v4/flows (all object types, paginated) by default; v3 /automation/v3/workflows (contact-based only) via HUBSPOT_WORKFLOWS_API=v3.",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// Assemble Raw Snapshot  (LIVE path only)\n// Merges paginated workflow pages (v4 \"results\" or v3 \"workflows\") into the\n// CRM metadata collected upstream. Runs whether or not workflows are in scope.\n// ============================================================================\nconst { config } = $('Config & Safety Gate').first().json;\nconst crm = $('Collect & Verify API Responses').first().json;\nconst raw = JSON.parse(JSON.stringify(crm.raw));\nconst endpointErrors = [...crm.endpointErrors];\nconst warnings = [...crm.warnings];\n\nif (config.scope.workflows) {\n  const pages = $input.all().map((i) => i.json);\n  const failed = pages.find((p) => p && p.error);\n  if (failed) {\n    const e = failed.error;\n    endpointErrors.push({\n      key: 'workflows',\n      message: String(typeof e === 'string' ? e : e.message || JSON.stringify(e)).slice(0, 300),\n      hint: 'Check the private app has the \"automation\" scope and the portal tier exposes the Workflows API.',\n    });\n  } else {\n    const all = [];\n    for (const p of pages) {\n      if (Array.isArray(p.results)) all.push(...p.results);\n      else if (Array.isArray(p.workflows)) all.push(...p.workflows);\n    }\n    raw.workflows = all;\n    if (pages.length >= config.limits.maxWorkflowPages) {\n      warnings.push(`Workflow pagination stopped at the node's ${config.limits.maxWorkflowPages}-page cap; the list may be incomplete.`);\n    }\n  }\n}\n\nreturn [{ json: { source: crm.source, raw, endpointErrors, warnings } }];\n"
+      },
+      "id": "e501a1a0-28f5-426e-a608-969220b9c4da",
+      "name": "Assemble Raw Snapshot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        260
+      ],
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// Normalization & Checksum Auditor\n// 1. Scrubs volatile timestamps and user IDs (configurable).\n// 2. Sorts every object key and every record array deterministically, so the\n//    same portal configuration always serialises to the same bytes.\n// 3. Splits the snapshot into one JSON file per object type / concern.\n// 4. Computes SHA-256 per file, per record (short hash) and for the bundle.\n// 5. Re-parses every file and re-hashes it (integrity self-check).\n// 6. Runs RevOps sanity checks (empty picklists, duplicate names, pipelines\n//    without a closed stage, out-of-range probabilities...).\n// Uses Node's crypto module when n8n allows it (NODE_FUNCTION_ALLOW_BUILTIN=crypto)\n// and otherwise falls back to the bundled pure-JS SHA-256 below. Both produce\n// identical digests (verified by scripts/simulate-sandbox-run.js).\n// ============================================================================\nconst { config } = $('Config & Safety Gate').first().json;\nconst input = $input.first().json;\nconst raw = input.raw || {};\nconst opts = config.normalization;\nconst scope = config.scope;\n\n// ---------------------------------------------------------------- utf-8 / hash\nfunction utf8Bytes(str) {\n  const out = [];\n  for (let i = 0; i < str.length; i++) {\n    let c = str.charCodeAt(i);\n    if (c >= 0xd800 && c <= 0xdbff && i + 1 < str.length) {\n      const d = str.charCodeAt(i + 1);\n      if (d >= 0xdc00 && d <= 0xdfff) { c = 0x10000 + ((c - 0xd800) << 10) + (d - 0xdc00); i++; }\n    }\n    if (c < 0x80) out.push(c);\n    else if (c < 0x800) out.push(0xc0 | (c >> 6), 0x80 | (c & 63));\n    else if (c < 0x10000) out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));\n    else out.push(0xf0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));\n  }\n  return out;\n}\n\nfunction sha256Fallback(str) {\n  const K = [\n    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,\n    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,\n    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,\n    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,\n    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,\n    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,\n    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,\n    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,\n  ];\n  const H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];\n  const bytes = utf8Bytes(str);\n  const bitLen = bytes.length * 8;\n  bytes.push(0x80);\n  while (bytes.length % 64 !== 56) bytes.push(0);\n  const hi = Math.floor(bitLen / 0x100000000);\n  const lo = bitLen >>> 0;\n  bytes.push((hi >>> 24) & 255, (hi >>> 16) & 255, (hi >>> 8) & 255, hi & 255);\n  bytes.push((lo >>> 24) & 255, (lo >>> 16) & 255, (lo >>> 8) & 255, lo & 255);\n  const W = new Array(64);\n  const rotr = (x, n) => (x >>> n) | (x << (32 - n));\n  for (let off = 0; off < bytes.length; off += 64) {\n    for (let t = 0; t < 16; t++) {\n      const j = off + t * 4;\n      W[t] = ((bytes[j] << 24) | (bytes[j + 1] << 16) | (bytes[j + 2] << 8) | bytes[j + 3]) >>> 0;\n    }\n    for (let t = 16; t < 64; t++) {\n      const s0 = rotr(W[t - 15], 7) ^ rotr(W[t - 15], 18) ^ (W[t - 15] >>> 3);\n      const s1 = rotr(W[t - 2], 17) ^ rotr(W[t - 2], 19) ^ (W[t - 2] >>> 10);\n      W[t] = (W[t - 16] + s0 + W[t - 7] + s1) >>> 0;\n    }\n    let [a, b, c, d, e, f, g, h] = H;\n    for (let t = 0; t < 64; t++) {\n      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);\n      const ch = (e & f) ^ (~e & g);\n      const t1 = (h + S1 + ch + K[t] + W[t]) >>> 0;\n      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);\n      const maj = (a & b) ^ (a & c) ^ (b & c);\n      const t2 = (S0 + maj) >>> 0;\n      h = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;\n    }\n    H[0] = (H[0] + a) >>> 0; H[1] = (H[1] + b) >>> 0; H[2] = (H[2] + c) >>> 0; H[3] = (H[3] + d) >>> 0;\n    H[4] = (H[4] + e) >>> 0; H[5] = (H[5] + f) >>> 0; H[6] = (H[6] + g) >>> 0; H[7] = (H[7] + h) >>> 0;\n  }\n  return H.map((x) => x.toString(16).padStart(8, '0')).join('');\n}\n\nlet hashEngine = 'pure-js';\nlet nodeCrypto = null;\ntry {\n  nodeCrypto = require('crypto');\n  if (nodeCrypto && typeof nodeCrypto.createHash === 'function') hashEngine = 'node:crypto';\n  else nodeCrypto = null;\n} catch (e) {\n  nodeCrypto = null;\n}\nconst sha256 = (s) => (nodeCrypto ? nodeCrypto.createHash('sha256').update(s, 'utf8').digest('hex') : sha256Fallback(s));\n\n// ------------------------------------------------------------ canonical JSON\nfunction canonical(v) {\n  if (Array.isArray(v)) return v.map(canonical);\n  if (v && typeof v === 'object') {\n    const out = {};\n    for (const k of Object.keys(v).sort()) {\n      if (v[k] === undefined) continue;\n      out[k] = canonical(v[k]);\n    }\n    return out;\n  }\n  return v;\n}\nconst serialize = (v) => JSON.stringify(canonical(v), null, 2) + '\\n';\n\n// ------------------------------------------------------------------- scrub\nconst USER_ID_KEYS = new Set(['createdUserId', 'updatedUserId', 'createdByUserId', 'updatedByUserId', 'userId']);\nconst VOLATILE_KEYS = new Set(['updatedAt']);\nfunction scrub(v, { stripTimestamps }) {\n  if (Array.isArray(v)) return v.map((x) => scrub(x, { stripTimestamps }));\n  if (v && typeof v === 'object') {\n    const out = {};\n    for (const [k, val] of Object.entries(v)) {\n      if (opts.redactUserIds && USER_ID_KEYS.has(k)) continue;\n      if (stripTimestamps && VOLATILE_KEYS.has(k)) continue;\n      out[k] = scrub(val, { stripTimestamps });\n    }\n    return out;\n  }\n  return v;\n}\nconst scrubCrm = (v) => scrub(v, { stripTimestamps: opts.stripVolatileTimestamps });\n\n// ------------------------------------------------------------------- sort\nconst cmpStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0);\nconst cmpIdLike = (a, b) => {\n  const sa = String(a), sb = String(b);\n  if (/^\\d+$/.test(sa) && /^\\d+$/.test(sb) && sa.length !== sb.length) return sa.length - sb.length;\n  return cmpStr(sa, sb);\n};\nconst byName = (a, b) => cmpStr(String(a.name || ''), String(b.name || ''));\nconst byOrderThenId = (a, b) => (Number(a.displayOrder ?? 0) - Number(b.displayOrder ?? 0)) || cmpIdLike(a.id, b.id);\n\nfunction normProperty(p) {\n  const q = scrubCrm(p);\n  if (Array.isArray(q.options)) {\n    q.options = [...q.options].sort((a, b) => cmpStr(String(a.value), String(b.value)));\n  }\n  return q;\n}\nfunction normPipeline(p) {\n  const q = scrubCrm(p);\n  if (Array.isArray(q.stages)) q.stages = [...q.stages].sort(byOrderThenId);\n  return q;\n}\nconst WORKFLOW_ALLOWLIST = ['id', 'name', 'description', 'flowType', 'type', 'objectTypeId', 'isEnabled', 'enabled', 'revisionId', 'createdAt', 'insertedAt', 'updatedAt'];\nfunction normWorkflow(w) {\n  // Allowlist only: action graphs, enrollment criteria and email bodies are\n  // deliberately NOT exported, so no PII or message content can leak into Git.\n  const pick = {};\n  for (const k of WORKFLOW_ALLOWLIST) if (w[k] !== undefined && w[k] !== null) pick[k] = w[k];\n  return scrub({\n    id: String(pick.id),\n    name: pick.name ?? null,\n    description: pick.description ?? null,\n    kind: pick.flowType ?? pick.type ?? null,\n    objectTypeId: pick.objectTypeId ?? (raw.workflowsApi === 'v3' ? '0-1' : null),\n    enabled: pick.isEnabled ?? pick.enabled ?? null,\n    revisionId: pick.revisionId !== undefined ? String(pick.revisionId) : null,\n    createdAt: pick.createdAt ?? (typeof pick.insertedAt === 'number' ? new Date(pick.insertedAt).toISOString() : pick.insertedAt ?? null),\n    updatedAt: typeof pick.updatedAt === 'number' ? new Date(pick.updatedAt).toISOString() : pick.updatedAt ?? null,\n    sourceApi: raw.workflowsApi || 'v4',\n  }, { stripTimestamps: false });\n}\n\n// ------------------------------------------------------------ file builder\nconst files = [];\nconst warnings = [...(input.warnings || [])];\nconst errors = [];\nconst counts = { customObjects: 0, properties: 0, propertyGroups: 0, pipelines: 0, pipelineStages: 0, workflows: 0 };\nconst safeSeg = (s) => String(s).replace(/[^A-Za-z0-9_\\-.]/g, '_');\n\nfunction addFile(path, kind, objectType, records, keyFn) {\n  const content = serialize(records);\n  const recordHashes = {};\n  for (const r of records) {\n    const k = String(keyFn(r));\n    if (recordHashes[k]) warnings.push(`${path}: duplicate record key \"${k}\"`);\n    recordHashes[k] = sha256(serialize(r)).slice(0, 16);\n  }\n  files.push({\n    path,\n    kind,\n    objectType,\n    records: records.length,\n    bytes: utf8Bytes(content).length,\n    sha256: sha256(content),\n    recordHashes,\n    content,\n  });\n}\n\nconst keepProperty = (p) => scope.includeHubspotDefinedProperties || p.hubspotDefined !== true;\n\n// Custom object schemas (+ their properties as a separate file each).\nif (Array.isArray(raw.customObjectSchemas)) {\n  const schemas = [...raw.customObjectSchemas].sort((a, b) => cmpStr(String(a.objectTypeId || a.name), String(b.objectTypeId || b.name)));\n  const schemaRecords = [];\n  for (const s of schemas) {\n    const { properties = [], ...rest } = s;\n    const rec = scrubCrm(rest);\n    if (Array.isArray(rec.associations)) rec.associations = [...rec.associations].sort((a, b) => cmpIdLike(a.id, b.id));\n    for (const k of ['requiredProperties', 'searchableProperties', 'secondaryDisplayProperties']) {\n      if (Array.isArray(rec[k])) rec[k] = [...rec[k]].sort(cmpStr);\n    }\n    rec.propertyCount = properties.filter(keepProperty).length;\n    schemaRecords.push(rec);\n    const props = properties.filter(keepProperty).map(normProperty).sort(byName);\n    addFile(`custom-objects/${safeSeg(s.name || s.objectTypeId)}/properties.json`, 'customObjectProperties', s.objectTypeId, props, (r) => r.name);\n    counts.properties += props.length;\n    if (!rec.primaryDisplayProperty) warnings.push(`Custom object ${s.name}: no primaryDisplayProperty set`);\n  }\n  addFile('custom-objects/schemas.json', 'customObjectSchemas', null, schemaRecords, (r) => r.objectTypeId || r.name);\n  counts.customObjects = schemaRecords.length;\n}\n\n// CRM properties per object type.\nif (raw.properties) {\n  for (const t of Object.keys(raw.properties).sort()) {\n    const props = (raw.properties[t] || []).filter(keepProperty).map(normProperty).sort(byName);\n    for (const p of props) {\n      if (!p.label) warnings.push(`properties/${t}: \"${p.name}\" has an empty label`);\n      if (p.type === 'enumeration' && (!Array.isArray(p.options) || p.options.length === 0) && !p.externalOptions) {\n        warnings.push(`properties/${t}: enumeration \"${p.name}\" has no options`);\n      }\n    }\n    addFile(`properties/${safeSeg(t)}.json`, 'properties', t, props, (r) => r.name);\n    counts.properties += props.length;\n  }\n}\n\n// Property groups per object type.\nif (raw.propertyGroups) {\n  for (const t of Object.keys(raw.propertyGroups).sort()) {\n    const groups = (raw.propertyGroups[t] || []).map(scrubCrm).sort(byName);\n    addFile(`property-groups/${safeSeg(t)}.json`, 'propertyGroups', t, groups, (r) => r.name);\n    counts.propertyGroups += groups.length;\n  }\n}\n\n// Pipelines and stages per object type.\nif (raw.pipelines) {\n  for (const t of Object.keys(raw.pipelines).sort()) {\n    const pipes = (raw.pipelines[t] || []).map(normPipeline).sort(byOrderThenId);\n    for (const p of pipes) {\n      const stages = p.stages || [];\n      counts.pipelineStages += stages.length;\n      if (stages.length === 0) warnings.push(`pipelines/${t}: \"${p.label}\" has no stages`);\n      if (t === 'deals') {\n        if (!stages.some((s) => String(s.metadata && s.metadata.isClosed) === 'true')) {\n          warnings.push(`pipelines/deals: \"${p.label}\" has no closed stage (isClosed=true)`);\n        }\n        for (const s of stages) {\n          const pr = Number(s.metadata && s.metadata.probability);\n          if (s.metadata && s.metadata.probability !== undefined && (Number.isNaN(pr) || pr < 0 || pr > 1)) {\n            warnings.push(`pipelines/deals: stage \"${s.label}\" probability ${s.metadata.probability} is outside 0-1`);\n          }\n        }\n      }\n      const labels = stages.map((s) => s.label);\n      const dup = labels.filter((l, i) => labels.indexOf(l) !== i);\n      if (dup.length) warnings.push(`pipelines/${t}: \"${p.label}\" has duplicate stage labels: ${[...new Set(dup)].join(', ')}`);\n    }\n    addFile(`pipelines/${safeSeg(t)}.json`, 'pipelines', t, pipes, (r) => r.id);\n    counts.pipelines += pipes.length;\n  }\n}\n\n// Workflow metadata (allowlisted fields only).\nif (Array.isArray(raw.workflows)) {\n  const wfs = raw.workflows.map(normWorkflow).sort((a, b) => cmpIdLike(a.id, b.id));\n  addFile('workflows/workflows.json', 'workflows', null, wfs, (r) => r.id);\n  counts.workflows = wfs.length;\n}\n\nfiles.sort((a, b) => cmpStr(a.path, b.path));\n\n// ------------------------------------------------------- integrity self-check\nconst integrity = { checked: 0, passed: 0, failed: [] };\nfor (const f of files) {\n  integrity.checked++;\n  let ok = false;\n  try {\n    const again = serialize(JSON.parse(f.content));\n    ok = again === f.content && sha256(again) === f.sha256;\n  } catch (e) {\n    ok = false;\n  }\n  if (ok) integrity.passed++;\n  else integrity.failed.push(f.path);\n}\n\nconst sha256sums = files.map((f) => `${f.sha256}  ${f.path}`).join('\\n') + (files.length ? '\\n' : '');\nconst bundleSha256 = sha256(sha256sums);\nconst totalRecords = files.reduce((n, f) => n + f.records, 0);\n\nif (integrity.failed.length) errors.push(`Integrity self-check failed for: ${integrity.failed.join(', ')}`);\nif (files.length === 0 || totalRecords === 0) errors.push('Snapshot is empty: no metadata records were exported.');\nconst endpointErrors = input.endpointErrors || [];\n\nconst health = errors.length ? 'FAILED' : endpointErrors.length ? 'DEGRADED' : 'HEALTHY';\n\nconst manifest = {\n  schemaVersion: '1.0.0',\n  generator: 'n8n-hubspot-portal-configuration-snapshot-git-backup',\n  portalId: String(config.portalId),\n  source: input.source,\n  snapshotVersion: config.snapshotVersion,\n  capturedAt: config.capturedAt,\n  runId: config.runId,\n  hashAlgorithm: 'sha256',\n  hashEngine,\n  bundleSha256,\n  health,\n  exportScope: scope,\n  normalization: opts,\n  counts,\n  files: Object.fromEntries(files.map((f) => [f.path, {\n    kind: f.kind,\n    objectType: f.objectType,\n    records: f.records,\n    bytes: f.bytes,\n    sha256: f.sha256,\n    recordHashes: f.recordHashes,\n  }])),\n};\n\nreturn [{\n  json: {\n    snapshot: {\n      portalId: String(config.portalId),\n      root: config.git.snapshotRoot,\n      capturedAt: config.capturedAt,\n      snapshotVersion: config.snapshotVersion,\n      bundleSha256,\n      sha256sums,\n      totalRecords,\n      counts,\n      files,\n    },\n    manifest,\n    audit: { health, hashEngine, integrity, warnings, errors, endpointErrors },\n  },\n}];\n"
+      },
+      "id": "962748b2-872d-4efe-a9a0-55f7c5525cbe",
+      "name": "Normalization & Checksum Auditor",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        100
+      ],
+      "notes": "Deterministic sorted JSON + SHA-256 per file, per record and per bundle. Integrity self-check.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "5842f3eb-ac01-48bb-a4ac-5c45803179eb",
+              "leftValue": "={{ $('Config & Safety Gate').first().json.config.git.remoteReadAllowed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "0c3f8555-8a0c-4a95-a1cd-5530c0a66265",
+      "name": "Remote Diff Read Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2020,
+        100
+      ],
+      "notes": "Live mode with GITHUB_PAT + GITHUB_REPOSITORY: read previous manifest (GET only)."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Config & Safety Gate').first().json.config.git.apiRepoBase }}/contents/{{ $json.snapshot.root }}/manifest.json?ref={{ encodeURIComponent($('Config & Safety Gate').first().json.config.git.branch) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GITHUB_PAT }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "ae36475a-84ac-44a7-a00d-a04dbcd7716b",
+      "name": "Fetch Previous Manifest (Git)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2260,
+        0
+      ],
+      "notes": "A 404 on the first run is expected and handled.",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// Versioned Diff Builder\n// Compares the new snapshot with the previous manifest (read from Git in live\n// mode, or supplied offline as `previousManifest` by the simulator) at FILE\n// and RECORD level, finalises the manifest with lineage, writes the commit\n// message, and decides whether the commit gate is open.\n// ============================================================================\nconst { config } = $('Config & Safety Gate').first().json;\nconst norm = $('Normalization & Checksum Auditor').first().json;\nconst inp = $input.first().json || {};\n\n// ------------------------------------------------------- previous manifest\nlet prev = null;\nlet previousSource = 'none';\nif (inp.previousManifest && typeof inp.previousManifest === 'object') {\n  prev = inp.previousManifest;\n  previousSource = 'offline';\n} else if (inp.encoding === 'base64' && typeof inp.content === 'string') {\n  try {\n    prev = JSON.parse(Buffer.from(inp.content.replace(/\\n/g, ''), 'base64').toString('utf8'));\n    previousSource = 'git';\n  } catch (e) {\n    previousSource = 'git-unparseable';\n  }\n} else if (inp.error) {\n  // 404 on the first run is expected; anything else is reported.\n  const msg = typeof inp.error === 'string' ? inp.error : inp.error.message || '';\n  previousSource = /404|not found/i.test(msg) ? 'git-first-run' : 'git-unavailable';\n} else if (config.git.remoteReadAllowed) {\n  previousSource = 'git-unavailable';\n}\n\nconst prevFiles = (prev && prev.files) || {};\nconst curFiles = Object.fromEntries(norm.snapshot.files.map((f) => [f.path, f]));\nconst limit = config.limits.maxRecordNamesInCommit;\n\nconst added = [];\nconst modified = [];\nconst removed = [];\nconst unchanged = [];\n\nfor (const path of Object.keys(curFiles).sort()) {\n  const cur = curFiles[path];\n  const old = prevFiles[path];\n  if (!old) {\n    added.push({ path, records: cur.records, sha256: cur.sha256 });\n    continue;\n  }\n  if (old.sha256 === cur.sha256) {\n    unchanged.push(path);\n    continue;\n  }\n  const oh = old.recordHashes || {};\n  const nh = cur.recordHashes || {};\n  const recordsAdded = Object.keys(nh).filter((k) => !(k in oh)).sort();\n  const recordsRemoved = Object.keys(oh).filter((k) => !(k in nh)).sort();\n  const recordsChanged = Object.keys(nh).filter((k) => k in oh && oh[k] !== nh[k]).sort();\n  modified.push({ path, previousSha256: old.sha256, sha256: cur.sha256, recordsAdded, recordsRemoved, recordsChanged });\n}\nfor (const path of Object.keys(prevFiles).sort()) {\n  if (!curFiles[path]) removed.push({ path, previousSha256: prevFiles[path].sha256 });\n}\n\nconst health = norm.audit.health;\n// Never prune when the export was degraded: a missing file may only mean a\n// failed endpoint, not a deleted configuration.\nconst pruneEffective = config.git.pruneRemovedFiles && health === 'HEALTHY';\nconst hasChanges = added.length > 0 || modified.length > 0 || (removed.length > 0 && pruneEffective);\n\n// ------------------------------------------------------------ commit gate\nconst blockers = [...config.git.staticCommitBlockers];\nif (health === 'FAILED') blockers.push('Snapshot health is FAILED');\nif (health === 'DEGRADED' && !config.git.commitOnDegraded) blockers.push('Snapshot health is DEGRADED (set GIT_COMMIT_ON_DEGRADED=true to allow)');\nif (config.git.remoteReadAllowed && (previousSource === 'git-unavailable' || previousSource === 'git-unparseable')) {\n  blockers.push(`Previous manifest could not be read (${previousSource}); refusing to commit a blind diff`);\n}\nif (!hasChanges) blockers.push('No configuration changes since the previous snapshot');\nconst commitGate = { allowed: blockers.length === 0, reasons: blockers };\n\n// --------------------------------------------------------- final manifest\nconst manifest = {\n  ...norm.manifest,\n  lineage: {\n    previousSnapshotVersion: prev ? prev.snapshotVersion || null : null,\n    previousBundleSha256: prev ? prev.bundleSha256 || null : null,\n    previousSource,\n  },\n  changeSummary: {\n    added: added.map((a) => a.path),\n    modified: modified.map((m) => m.path),\n    removed: removed.map((r) => r.path),\n    pruned: pruneEffective ? removed.map((r) => r.path) : [],\n  },\n};\nconst canonical = (v) => {\n  if (Array.isArray(v)) return v.map(canonical);\n  if (v && typeof v === 'object') {\n    const o = {};\n    for (const k of Object.keys(v).sort()) if (v[k] !== undefined) o[k] = canonical(v[k]);\n    return o;\n  }\n  return v;\n};\nconst manifestContent = JSON.stringify(canonical(manifest), null, 2) + '\\n';\n\n// ---------------------------------------------------------- commit message\nconst fmtList = (arr) => {\n  if (!arr.length) return '';\n  const shown = arr.slice(0, limit).join(', ');\n  return arr.length > limit ? `${shown}, ... (+${arr.length - limit} more)` : shown;\n};\nconst lines = [];\nlines.push(\n  `chore(snapshot): portal-${config.portalId} ${config.snapshotVersion} [+${added.length} ~${modified.length} -${pruneEffective ? removed.length : 0}]`\n);\nlines.push('');\nlines.push(`Bundle:   sha256:${norm.snapshot.bundleSha256}`);\nlines.push(`Previous: ${manifest.lineage.previousBundleSha256 ? 'sha256:' + manifest.lineage.previousBundleSha256 : 'none (' + previousSource + ')'}`);\nlines.push(`Health:   ${health} | records: ${norm.snapshot.totalRecords} | hash engine: ${norm.audit.hashEngine}`);\nlines.push(`Run:      ${config.runId} (${norm.manifest.source})`);\nlines.push('');\nif (added.length || modified.length || removed.length) lines.push('Changes:');\nfor (const a of added) lines.push(`+ ${a.path} (${a.records} records)`);\nfor (const m of modified) {\n  const parts = [];\n  if (m.recordsAdded.length) parts.push(`added: ${fmtList(m.recordsAdded)}`);\n  if (m.recordsChanged.length) parts.push(`changed: ${fmtList(m.recordsChanged)}`);\n  if (m.recordsRemoved.length) parts.push(`removed: ${fmtList(m.recordsRemoved)}`);\n  lines.push(`~ ${m.path}${parts.length ? ' | ' + parts.join(' | ') : ''}`);\n}\nfor (const r of removed) lines.push(`${pruneEffective ? '-' : '!'} ${r.path}${pruneEffective ? '' : ' (missing from export; kept in repo, pruning disabled)'}`);\nif (norm.audit.warnings.length) {\n  lines.push('');\n  lines.push(`Warnings (${norm.audit.warnings.length}):`);\n  for (const w of norm.audit.warnings.slice(0, 10)) lines.push(`- ${w}`);\n}\nconst commitMessage = lines.join('\\n') + '\\n';\n\nreturn [{\n  json: {\n    diff: {\n      previousSource,\n      hasChanges,\n      pruneEffective,\n      added,\n      modified,\n      removed,\n      unchangedCount: unchanged.length,\n    },\n    commitGate,\n    commitMessage,\n    manifestPath: `${config.git.snapshotRoot}/manifest.json`,\n    manifestContent,\n    sha256sumsPath: `${config.git.snapshotRoot}/SHA256SUMS`,\n  },\n}];\n"
+      },
+      "id": "0c66009d-0c53-4807-aa0e-22b1549a6376",
+      "name": "Versioned Diff Builder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2500,
+        100
+      ],
+      "notes": "File- and record-level diff, manifest lineage, commit message, commit gate.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "8d31adf7-abb8-4be6-ad75-908b9352dc57",
+              "leftValue": "={{ $json.commitGate.allowed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ffaa7162-8e54-47d4-aff5-6adf644f0cd7",
+      "name": "Commit Gate Open?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2740,
+        100
+      ],
+      "notes": "Open only if: live, DRY_RUN=false, GIT_COMMITS_ENABLED=true, creds present, branch not protected, health OK, changes detected."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Config & Safety Gate').first().json.config.git.apiRepoBase }}/git/ref/heads/{{ $('Config & Safety Gate').first().json.config.git.branch }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GITHUB_PAT }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "88f90e0a-26a7-44b8-adc9-7df2f2be5ee5",
+      "name": "Git: Get Branch Ref",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2980,
+        -80
+      ],
+      "notes": "The target branch must already exist (see README).",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Config & Safety Gate').first().json.config.git.apiRepoBase }}/git/commits/{{ $json.object.sha }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GITHUB_PAT }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "389e5652-3c0a-4cdb-a33f-8e0844a75f24",
+      "name": "Git: Get Head Commit",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3200,
+        -80
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// Build Git Tree Payload  (only reached when the commit gate is OPEN)\n// Input: the branch head commit returned by \"Git: Get Head Commit\".\n// Builds a single atomic Git Data API tree: every changed snapshot file plus\n// manifest.json and SHA256SUMS. Deletions are emitted only when pruning is\n// effective (GIT_PRUNE_REMOVED_FILES=true and snapshot health HEALTHY).\n// ============================================================================\nconst { config } = $('Config & Safety Gate').first().json;\nconst norm = $('Normalization & Checksum Auditor').first().json;\nconst d = $('Versioned Diff Builder').first().json;\nconst head = $input.first().json;\n\nconst headSha = head && head.sha;\nconst baseTree = head && head.tree && head.tree.sha;\nif (!/^[0-9a-f]{40}$/i.test(String(headSha)) || !/^[0-9a-f]{40}$/i.test(String(baseTree))) {\n  throw new Error('Could not read the branch head commit/tree SHA from GitHub; aborting before any write.');\n}\nif (!d.commitGate.allowed) {\n  throw new Error('Commit gate is closed; this node must not run. Reasons: ' + d.commitGate.reasons.join('; '));\n}\n\nconst root = config.git.snapshotRoot;\nconst changed = new Set([...d.diff.added.map((a) => a.path), ...d.diff.modified.map((m) => m.path)]);\nconst tree = [];\nfor (const f of norm.snapshot.files) {\n  if (!changed.has(f.path)) continue;\n  tree.push({ path: `${root}/${f.path}`, mode: '100644', type: 'blob', content: f.content });\n}\nif (d.diff.pruneEffective) {\n  for (const r of d.diff.removed) tree.push({ path: `${root}/${r.path}`, mode: '100644', type: 'blob', sha: null });\n}\ntree.push({ path: d.manifestPath, mode: '100644', type: 'blob', content: d.manifestContent });\ntree.push({ path: d.sha256sumsPath, mode: '100644', type: 'blob', content: norm.snapshot.sha256sums });\n\nreturn [{\n  json: {\n    parentCommitSha: headSha,\n    treeRequest: { base_tree: baseTree, tree },\n    commitRequestBase: {\n      message: d.commitMessage,\n      parents: [headSha],\n      author: { name: config.git.commitAuthorName, email: config.git.commitAuthorEmail, date: config.capturedAt },\n    },\n    entryCount: tree.length,\n  },\n}];\n"
+      },
+      "id": "015e86b0-6d14-4d2b-adb5-2aafde5c5ee5",
+      "name": "Build Git Tree Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3420,
+        -80
+      ],
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config & Safety Gate').first().json.config.git.apiRepoBase }}/git/trees",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GITHUB_PAT }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.treeRequest) }}"
+      },
+      "id": "a74df882-43c3-48a1-ad13-b9688ea58bca",
+      "name": "Git: Create Tree",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3640,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config & Safety Gate').first().json.config.git.apiRepoBase }}/git/commits",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GITHUB_PAT }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify(Object.assign({}, $('Build Git Tree Payload').first().json.commitRequestBase, { tree: $json.sha })) }}"
+      },
+      "id": "bc78b323-ace6-40a3-a3e3-3c48fc3cc8ea",
+      "name": "Git: Create Commit",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3860,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('Config & Safety Gate').first().json.config.git.apiRepoBase }}/git/refs/heads/{{ $('Config & Safety Gate').first().json.config.git.branch }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GITHUB_PAT }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ sha: $json.sha, force: false }) }}"
+      },
+      "id": "d42ccf01-1426-47f5-a9d3-0e7f021085c5",
+      "name": "Git: Update Branch Ref",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4080,
+        -80
+      ],
+      "notes": "force:false — a concurrent push makes this fail safely instead of overwriting history."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// Commit Result\n// Input: the updated ref returned by \"Git: Update Branch Ref\".\n// ============================================================================\nconst { config } = $('Config & Safety Gate').first().json;\nconst ref = $input.first().json;\nconst created = $('Git: Create Commit').first().json;\nconst commitSha = (ref && ref.object && ref.object.sha) || created.sha;\nif (commitSha !== created.sha) {\n  throw new Error(`Branch ref points at ${commitSha} but the created commit is ${created.sha}; verify the branch manually.`);\n}\nreturn [{\n  json: {\n    mode: 'committed',\n    commit: {\n      sha: commitSha,\n      branch: config.git.branch,\n      url: config.git.webUrl ? `${config.git.webUrl}/commit/${commitSha}` : (created.html_url || null),\n      entries: $('Build Git Tree Payload').first().json.entryCount,\n    },\n  },\n}];\n"
+      },
+      "id": "cc8fd18f-288c-46f8-a136-4eac25a73d71",
+      "name": "Commit Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4300,
+        -80
+      ],
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// Dry-Run Preview\n// Shows exactly what WOULD be written to Git, and why it was not. Performs no\n// network calls. File contents stay available on the Normalization node's\n// output for inspection inside the n8n execution view.\n// ============================================================================\nconst { config } = $('Config & Safety Gate').first().json;\nconst norm = $('Normalization & Checksum Auditor').first().json;\nconst d = $input.first().json;\nconst root = config.git.snapshotRoot;\nconst changed = new Set([...d.diff.added.map((a) => a.path), ...d.diff.modified.map((m) => m.path)]);\n\nconst treeEntries = norm.snapshot.files\n  .filter((f) => changed.has(f.path))\n  .map((f) => ({ action: d.diff.added.some((a) => a.path === f.path) ? 'add' : 'modify', path: `${root}/${f.path}`, bytes: f.bytes, sha256: f.sha256 }));\nif (d.diff.pruneEffective) for (const r of d.diff.removed) treeEntries.push({ action: 'delete', path: `${root}/${r.path}` });\nif (d.diff.hasChanges) {\n  treeEntries.push({ action: 'write', path: d.manifestPath, bytes: d.manifestContent.length });\n  treeEntries.push({ action: 'write', path: d.sha256sumsPath, bytes: norm.snapshot.sha256sums.length });\n}\n\nreturn [{\n  json: {\n    mode: 'dry-run',\n    wouldCommit: d.diff.hasChanges,\n    blockedBy: d.commitGate.reasons,\n    preview: {\n      repository: config.git.repo || '(GITHUB_REPOSITORY not set)',\n      branch: config.git.branch,\n      commitMessage: d.commitMessage,\n      treeEntries,\n    },\n  },\n}];\n"
+      },
+      "id": "6e959baf-b0b4-48c3-a2f3-3da6b029752b",
+      "name": "Dry-Run Preview",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2980,
+        260
+      ],
+      "notes": "Shows the exact commit that would be made and every reason it was blocked.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// RevOps Summary Builder\n// Builds a compact health report plus a Slack-compatible payload\n// ({ text, blocks }) that also works with most generic JSON webhooks.\n// Never includes tokens, file contents or record values.\n// ============================================================================\nconst { config, safetyDecisions } = $('Config & Safety Gate').first().json;\nconst norm = $('Normalization & Checksum Auditor').first().json;\nconst d = $('Versioned Diff Builder').first().json;\nconst r = $input.first().json;\n\nconst health = norm.audit.health;\nconst status =\n  health === 'FAILED' ? 'FAILED'\n  : r.mode === 'committed' ? 'COMMITTED'\n  : d.diff.hasChanges ? 'CHANGES_PENDING'\n  : 'NO_CHANGES';\nconst icon = health === 'HEALTHY' ? ':large_green_circle:' : health === 'DEGRADED' ? ':large_yellow_circle:' : ':red_circle:';\nconst c = norm.snapshot.counts;\nconst modeLabel = config.sandboxMode ? 'SANDBOX' : config.dryRun ? 'LIVE / DRY-RUN' : 'LIVE';\n\nconst summary = {\n  status,\n  health,\n  mode: modeLabel,\n  portalId: config.portalId,\n  snapshotVersion: config.snapshotVersion,\n  runId: config.runId,\n  bundleSha256: norm.snapshot.bundleSha256,\n  integrity: { checked: norm.audit.integrity.checked, passed: norm.audit.integrity.passed, failed: norm.audit.integrity.failed },\n  hashEngine: norm.audit.hashEngine,\n  counts: c,\n  totalRecords: norm.snapshot.totalRecords,\n  files: norm.snapshot.files.length,\n  changes: {\n    added: d.diff.added.length,\n    modified: d.diff.modified.length,\n    removed: d.diff.removed.length,\n    pruned: d.diff.pruneEffective ? d.diff.removed.length : 0,\n    previousSource: d.diff.previousSource,\n  },\n  commit: r.mode === 'committed' ? r.commit : null,\n  blockedBy: r.mode === 'committed' ? [] : d.commitGate.reasons,\n  warnings: norm.audit.warnings,\n  errors: norm.audit.errors,\n  endpointErrors: norm.audit.endpointErrors,\n  safetyDecisions,\n};\n\nconst changeLine = `+${summary.changes.added} added · ~${summary.changes.modified} modified · -${summary.changes.removed} missing`;\nconst commitLine = summary.commit\n  ? `Committed \\`${summary.commit.sha.slice(0, 12)}\\` to \\`${summary.commit.branch}\\`${summary.commit.url ? ` (<${summary.commit.url}|view>)` : ''}`\n  : `No commit: ${summary.blockedBy.slice(0, 3).join('; ') || 'n/a'}`;\n\nconst text = `${icon} HubSpot config snapshot ${summary.status} · portal ${summary.portalId} · ${summary.snapshotVersion} · ${modeLabel}`;\nconst blocks = [\n  { type: 'header', text: { type: 'plain_text', text: `HubSpot Config Snapshot: ${summary.status}`, emoji: true } },\n  {\n    type: 'section',\n    fields: [\n      { type: 'mrkdwn', text: `*Health*\\n${icon} ${health}` },\n      { type: 'mrkdwn', text: `*Mode*\\n${modeLabel}` },\n      { type: 'mrkdwn', text: `*Portal*\\n${summary.portalId}` },\n      { type: 'mrkdwn', text: `*Version*\\n${summary.snapshotVersion}` },\n      { type: 'mrkdwn', text: `*Objects*\\n${c.customObjects} custom objects · ${c.properties} properties · ${c.propertyGroups} groups` },\n      { type: 'mrkdwn', text: `*Pipelines / Workflows*\\n${c.pipelines} pipelines (${c.pipelineStages} stages) · ${c.workflows} workflows` },\n    ],\n  },\n  { type: 'section', text: { type: 'mrkdwn', text: `*Changes*: ${changeLine}\\n*Git*: ${commitLine}` } },\n  {\n    type: 'context',\n    elements: [{\n      type: 'mrkdwn',\n      text: `Integrity ${summary.integrity.passed}/${summary.integrity.checked} files verified · bundle sha256:${summary.bundleSha256.slice(0, 16)}… · ${summary.warnings.length} warnings · ${summary.endpointErrors.length} endpoint errors`,\n    }],\n  },\n];\nif (summary.endpointErrors.length || summary.errors.length) {\n  blocks.push({\n    type: 'section',\n    text: {\n      type: 'mrkdwn',\n      text: '*Issues*\\n' + [...summary.errors, ...summary.endpointErrors.map((e) => `${e.key}: ${e.message}`)].slice(0, 8).map((x) => `• ${x}`).join('\\n'),\n    },\n  });\n}\n\nreturn [{ json: { summary, slackPayload: { text, blocks } } }];\n"
+      },
+      "id": "e17f5b09-b0cf-4677-aec5-5cbd91409474",
+      "name": "RevOps Summary Builder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4520,
+        100
+      ],
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "b7dc64b2-62fe-4a16-a407-93f41762daed",
+              "leftValue": "={{ $('Config & Safety Gate').first().json.config.notify.allowed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "bbe115db-cfa5-43c9-a47e-f9a615bb3d7e",
+      "name": "Notifications Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4740,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.slackPayload) }}"
+      },
+      "id": "ddf25bad-1569-4403-a181-8bb6da6a3130",
+      "name": "RevOps Slack / Webhook Notify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4980,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// Run Log (No External Calls)\n// Terminal node when notifications are disabled. The summary is visible in the\n// n8n execution log; nothing leaves the n8n instance.\n// ============================================================================\nconst { summary } = $input.first().json;\nreturn [{ json: { logged: true, notification: 'skipped (NOTIFICATIONS_ENABLED is not true or SLACK_WEBHOOK_URL is unset)', summary } }];\n"
+      },
+      "id": "df39f4f6-d690-4677-acbd-a4d2543463d5",
+      "name": "Run Log (No External Calls)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4980,
+        220
+      ],
+      "notesInFlow": false
+    }
+  ],
+  "connections": {
+    "Manual Test Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config & Safety Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily Snapshot Schedule": {
+      "main": [
+        [
+          {
+            "node": "Config & Safety Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config & Safety Gate": {
+      "main": [
+        [
+          {
+            "node": "Sandbox Mode?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sandbox Mode?": {
+      "main": [
+        [
+          {
+            "node": "Load Synthetic Fixture",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build HubSpot Export Requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Synthetic Fixture": {
+      "main": [
+        [
+          {
+            "node": "Normalization & Checksum Auditor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build HubSpot Export Requests": {
+      "main": [
+        [
+          {
+            "node": "HubSpot Metadata Export (v3 API)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HubSpot Metadata Export (v3 API)": {
+      "main": [
+        [
+          {
+            "node": "Collect & Verify API Responses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect & Verify API Responses": {
+      "main": [
+        [
+          {
+            "node": "Workflows In Scope?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Workflows In Scope?": {
+      "main": [
+        [
+          {
+            "node": "HubSpot Workflows Export",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Assemble Raw Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HubSpot Workflows Export": {
+      "main": [
+        [
+          {
+            "node": "Assemble Raw Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assemble Raw Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Normalization & Checksum Auditor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalization & Checksum Auditor": {
+      "main": [
+        [
+          {
+            "node": "Remote Diff Read Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remote Diff Read Enabled?": {
+      "main": [
+        [
+          {
+            "node": "Fetch Previous Manifest (Git)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Versioned Diff Builder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Previous Manifest (Git)": {
+      "main": [
+        [
+          {
+            "node": "Versioned Diff Builder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Versioned Diff Builder": {
+      "main": [
+        [
+          {
+            "node": "Commit Gate Open?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Commit Gate Open?": {
+      "main": [
+        [
+          {
+            "node": "Git: Get Branch Ref",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dry-Run Preview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Git: Get Branch Ref": {
+      "main": [
+        [
+          {
+            "node": "Git: Get Head Commit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Git: Get Head Commit": {
+      "main": [
+        [
+          {
+            "node": "Build Git Tree Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Git Tree Payload": {
+      "main": [
+        [
+          {
+            "node": "Git: Create Tree",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Git: Create Tree": {
+      "main": [
+        [
+          {
+            "node": "Git: Create Commit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Git: Create Commit": {
+      "main": [
+        [
+          {
+            "node": "Git: Update Branch Ref",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Git: Update Branch Ref": {
+      "main": [
+        [
+          {
+            "node": "Commit Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Commit Result": {
+      "main": [
+        [
+          {
+            "node": "RevOps Summary Builder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dry-Run Preview": {
+      "main": [
+        [
+          {
+            "node": "RevOps Summary Builder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RevOps Summary Builder": {
+      "main": [
+        [
+          {
+            "node": "Notifications Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notifications Enabled?": {
+      "main": [
+        [
+          {
+            "node": "RevOps Slack / Webhook Notify",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Run Log (No External Calls)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}
